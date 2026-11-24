@@ -46,8 +46,10 @@ cd apps/desktop
 npm run tauri build
 ```
 
+On Windows systems with limited build memory, set `$env:CARGO_BUILD_JOBS = '1'` in PowerShell before running the Tauri build.
+
 ## Current boundaries
 
 Conversion is limited to static 8-bit JPEG, PNG and WebP. Animated images, embedded ICC profiles and higher bit depths require additional engines or color handling. Some other families can be recognized by signature for inspection. Media, PDF, documents, archives and cross-format batch optimization remain on the roadmap. Candidate search is bounded and measures RGB PSNR for JPEG. Perceptual quality, color appearance and the absence of private information visible in pixels require separate checks.
 
-[Architecture](docs/architecture/WORKBENCH.md) · [Recipe format](docs/development/RECIPES.md) · [Competitor research](docs/research/COMPETITORS.md) · [Contributing](CONTRIBUTING.md) · [Security scope](SECURITY.md)
+[Architecture](docs/architecture/WORKBENCH.md) · [Recipe format](docs/development/RECIPES.md) · [Dependencies](docs/development/DEPENDENCIES.md) · [Competitor research](docs/research/COMPETITORS.md) · [Contributing](CONTRIBUTING.md) · [Security scope](SECURITY.md)
