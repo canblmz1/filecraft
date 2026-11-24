@@ -4,6 +4,10 @@
 
 FileCraft is a free, MIT-licensed desktop application and CLI for local, goal-driven file processing. Set one total size limit for a package of images, PDFs and MP4 clips, then check the results before sharing.
 
+![FileCraft fits a 57.41 MB package of a photo, a scanned PDF and a phone clip into 9.77 MB under a 20 MB limit and lists the checks for each file](docs/media/filecraft-demo.gif)
+
+<sub>Recorded from the Windows desktop app with synthetic files. Encoding is fast-forwarded. [How the demo is made](scripts/demo/README.md)</sub>
+
 ## What you can do
 
 - Inspect the detected content type, byte size and SHA-256. Supported raster headers also expose dimensions, animation, alpha channel, ICC and EXIF probes.
@@ -12,6 +16,10 @@ FileCraft is a free, MIT-licensed desktop application and CLI for local, goal-dr
 - Keep transparency and orientation-corrected pixel dimensions. Retrieve before/after sizes, checksums, validation results and JPEG RGB PSNR in a JSON report.
 - Reuse native UI presets or import and export versioned JSON recipes. Desktop and CLI use the same Rust engine.
 - Save verified output as a new file. Originals and existing output files are preserved.
+
+## Download
+
+Windows x64 installers are on the [Releases](https://github.com/canblmz1/filecraft/releases) page. The 0.0.1 installer is not code-signed yet, so Windows SmartScreen may ask for confirmation. MP4 processing needs FFmpeg with libx264 and AAC plus FFprobe on PATH, for example from `winget install Gyan.FFmpeg`. Restart FileCraft after installing them. macOS and Linux packages are not published yet, so build them from source.
 
 ## Run from source
 

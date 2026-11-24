@@ -5,3 +5,4 @@
 /apps/desktop/src-tauri/icons/android/
 /apps/desktop/src-tauri/icons/ios/
 *.log
+__pycache__/

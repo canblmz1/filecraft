@@ -8,6 +8,6 @@ Stars are an adoption signal. FileCraft's launch story is a verified size limit 
 | 2 | Common scanned PDFs already compress their streams. Lossless rewriting may save little, and a short list of MP4 profiles excludes typical edge cases. | Public synthetic or redistributable fixtures for scanned PDFs, phone clips, already-compressed inputs, transparency, and exact budget failures. |
 | 3 | A passed byte check does not establish rendition fidelity. PDF lacks an independent renderer and video lacks a perceptual metric. | PDF rendering and text comparisons, video quality evidence, and clear reasons when a goal is impossible. |
 | 4 | Crash recovery and worker isolation are incomplete. Windows has the first desktop smoke path. macOS and Linux need release verification. | Cancellation and restart tests, bounded parser resources, signed platform builds, and a cross-platform smoke matrix. |
-| 5 | The project needs a public adoption loop. | A short 20 MB package demo, minimal sample inputs, a tagged release, issue triage, and feedback from users with actual upload limits. |
+| 5 | A recorded 20 MB package demo and a synthetic input generator exist in `scripts/demo`. The project still needs a public adoption loop. | A tagged release, issue triage, and feedback from users with actual upload limits. |
 
 Track completed mixed jobs, setup failures, and the reasons goals were missed during opt-in testing. Keep production processing and usage data local. Publish only aggregate results that participants have agreed to share.

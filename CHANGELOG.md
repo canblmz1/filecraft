@@ -5,6 +5,7 @@
 - Mixed batches of images, PDFs and eligible MP4 clips share a verified byte budget.
 - Added lossless PDF stream optimization, optional FFmpeg video processing and an application package recipe.
 - Reports distinguish transcoded files from exact-byte copies and record format-specific checks.
+- Added a reproducible desktop demo with synthetic inputs.
 
 ## Image-only development preview
 
