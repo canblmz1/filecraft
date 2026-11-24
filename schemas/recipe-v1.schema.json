@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileCraft recipe v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "output_format"],
+  "properties": {
+    "version": { "const": 1 },
+    "output_format": { "enum": ["jpeg", "png", "webp"] },
+    "max_file_bytes": { "type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991 },
+    "max_batch_bytes": { "type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991 },
+    "min_width": { "type": ["integer", "null"], "minimum": 1, "maximum": 4294967295 },
+    "min_height": { "type": ["integer", "null"], "minimum": 1, "maximum": 4294967295 },
+    "jpeg_quality": { "type": ["integer", "null"], "minimum": 35, "maximum": 100 },
+    "min_psnr_db": { "type": ["integer", "null"], "minimum": 1, "maximum": 100 },
+    "lossless_only": { "type": "boolean", "default": false },
+    "max_seconds": { "type": ["integer", "null"], "minimum": 1, "maximum": 86400 }
+  },
+  "if": { "properties": { "output_format": { "const": "jpeg" } } },
+  "then": { "properties": { "lossless_only": { "const": false } } },
+  "else": { "properties": { "jpeg_quality": { "type": "null" }, "min_psnr_db": { "type": "null" } } }
+}

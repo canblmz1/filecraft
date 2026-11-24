@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "output_format": "jpeg",
+  "max_batch_bytes": 5000000,
+  "jpeg_quality": 90,
+  "min_psnr_db": 26
+}

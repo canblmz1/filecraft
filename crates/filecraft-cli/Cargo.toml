@@ -1,0 +1,15 @@
+[package]
+name = "filecraft-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "filecraft"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+filecraft-core.workspace = true
+serde_json.workspace = true
+ctrlc = "3"
