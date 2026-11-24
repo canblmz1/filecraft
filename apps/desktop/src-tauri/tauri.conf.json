@@ -18,5 +18,5 @@
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     }
   },
-  "bundle": { "active": true, "targets": "all", "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"], "windows": { "webviewInstallMode": { "type": "offlineInstaller", "silent": true } } }
+  "bundle": { "active": true, "targets": "all", "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"], "windows": { "webviewInstallMode": { "type": "embedBootstrapper", "silent": true } } }
 }
