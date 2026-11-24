@@ -1,6 +1,8 @@
 mod inspect;
+mod pdf;
 mod process;
 mod recipe;
+mod video;
 
 pub use inspect::{Inspection, inspect};
 pub use process::{BatchReport, Control, FileReport, Phase, Progress, Status, run};

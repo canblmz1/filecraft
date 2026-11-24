@@ -35,4 +35,4 @@
 | Pandoc | CLI/libraries | Scripted, explicit filters | Reader/writer warnings |
 | Tesseract | CLI/libraries | File lists/scripts | OCR confidence in structured output |
 | OCRmyPDF | CLI | Multipage and scripted | PDF/A workflow, OCR warnings |
-| FileCraft initial scope | Desktop and CLI | Declarative recipe, image batch | Byte caps, decode and format checks, pixel fidelity, checksum, explicit failure |
+| FileCraft 0.0.1 | Desktop and CLI | Declarative recipes and batches of images, PDF and eligible MP4 | One verified total size limit, format-specific checks, SHA-256 and explicit failure |

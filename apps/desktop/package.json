@@ -1,6 +1,6 @@
 {
   "name": "@filecraft/desktop",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "scripts": { "dev": "vite", "build": "tsc --noEmit && vite build", "build:bundle": "npm run build && node ../../scripts/collect-notices.mjs", "tauri": "tauri" },

@@ -122,8 +122,10 @@ impl Jobs {
 }
 
 #[tauri::command]
-fn engine_capabilities() -> [Capability; 1] {
-    capabilities()
+async fn engine_capabilities() -> CommandResult<[Capability; 3]> {
+    async_runtime::spawn_blocking(capabilities)
+        .await
+        .map_err(message)
 }
 
 #[tauri::command]

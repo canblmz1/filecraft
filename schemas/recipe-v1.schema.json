@@ -6,7 +6,7 @@
   "required": ["version", "output_format"],
   "properties": {
     "version": { "const": 1 },
-    "output_format": { "enum": ["jpeg", "png", "webp"] },
+    "output_format": { "enum": ["jpeg", "png", "webp", "mixed"] },
     "max_file_bytes": { "type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991 },
     "max_batch_bytes": { "type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991 },
     "min_width": { "type": ["integer", "null"], "minimum": 1, "maximum": 4294967295 },
@@ -18,5 +18,11 @@
   },
   "if": { "properties": { "output_format": { "const": "jpeg" } } },
   "then": { "properties": { "lossless_only": { "const": false } } },
-  "else": { "properties": { "jpeg_quality": { "type": "null" }, "min_psnr_db": { "type": "null" } } }
+  "else": { "properties": { "jpeg_quality": { "type": "null" }, "min_psnr_db": { "type": "null" } } },
+  "allOf": [
+    {
+      "if": { "properties": { "output_format": { "const": "mixed" } } },
+      "then": { "required": ["max_batch_bytes"], "properties": { "max_batch_bytes": { "type": "integer" } } }
+    }
+  ]
 }

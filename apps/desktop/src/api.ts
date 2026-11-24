@@ -1,10 +1,11 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 
-export type Format = 'jpeg' | 'png' | 'webp'
+export type Format = 'jpeg' | 'png' | 'webp' | 'pdf' | 'mp4'
+export type OutputMode = Extract<Format, 'jpeg' | 'png' | 'webp'> | 'mixed'
 export type Recipe = {
   version: 1
-  output_format: Format
+  output_format: OutputMode
   max_file_bytes: number | null
   max_batch_bytes: number | null
   min_width: number | null
@@ -15,7 +16,7 @@ export type Recipe = {
   max_seconds: number | null
 }
 export type Inspection = {
-  name: string; bytes: number; mime: string | null; raster_format: Format | null
+  name: string; bytes: number; mime: string | null; format: Format | null; raster_format: Format | null
   width: number | null; height: number | null; exif: boolean | null; icc: boolean | null
   alpha_channel: boolean | null; animated: boolean | null; sha256: string; warnings: string[]
 }
@@ -26,6 +27,7 @@ export type FileReport = {
   width: number; height: number; duration_ms: number; jpeg_quality: number | null
   psnr_db: number | null; pixels_identical: boolean; orientation_applied: boolean
   metadata_removed: string[]; verified_checks: string[]; unsupported_checks: string[]
+  unchanged?: boolean; pdf_pages?: number | null; video_duration_seconds?: number | null; video_crf?: number | null
 }
 export type Report = {
   status: 'completed' | 'partial' | 'failed' | 'cancelled'
@@ -81,6 +83,9 @@ export const baseRecipe: Recipe = {
   min_width: null, min_height: null, jpeg_quality: null, min_psnr_db: null,
   lossless_only: true, max_seconds: null,
 }
+export const mixedRecipe: Recipe = {
+  ...baseRecipe, output_format: 'mixed', max_batch_bytes: 20_000_000, lossless_only: false,
+}
 
 export function size(value: number): string {
   if (value < 1000) return value + ' B'
@@ -90,5 +95,7 @@ export function size(value: number): string {
 }
 
 export const basename = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
-export const label = (format: Format) => ({ jpeg: 'JPEG', png: 'PNG', webp: 'WebP' })[format]
+export const label = (format: Format | OutputMode) => ({
+  jpeg: 'JPEG', png: 'PNG', webp: 'WebP', pdf: 'PDF', mp4: 'MP4', mixed: 'Mixed batch',
+})[format]
 export const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)

@@ -2,12 +2,13 @@
 
 **The private workbench for any file.**
 
-FileCraft is a free, MIT-licensed desktop application and CLI for local, goal-driven file processing. Version 0.1 starts with static JPEG, PNG and WebP images.
+FileCraft is a free, MIT-licensed desktop application and CLI for local, goal-driven file processing. Set one total size limit for a package of images, PDFs and MP4 clips, then check the results before sharing.
 
 ## What you can do
 
 - Inspect the detected content type, byte size and SHA-256. Supported raster headers also expose dimensions, animation, alpha channel, ICC and EXIF probes.
 - Set a per-file or whole-batch size limit. With JPEG, try several encodings and select from verified candidates. PNG and WebP encode losslessly.
+- Choose **Mixed batch** for static JPEG, PNG and WebP images, PDFs, and supported MP4 clips. Images are losslessly optimized as WebP when smaller. PDFs use lossless stream compression. MP4 uses verified H.264/AAC candidates when helpful. Byte-for-byte copies are reported explicitly. Video needs FFmpeg with libx264 and AAC plus FFprobe on PATH.
 - Keep transparency and orientation-corrected pixel dimensions. Retrieve before/after sizes, checksums, validation results and JPEG RGB PSNR in a JSON report.
 - Reuse native UI presets or import and export versioned JSON recipes. Desktop and CLI use the same Rust engine.
 - Save verified output as a new file. Originals and existing output files are preserved.
@@ -32,6 +33,7 @@ From the repository root, with an existing output directory:
 cargo run --locked -p filecraft-cli -- capabilities
 cargo run --locked -p filecraft-cli -- inspect photo.png scan.jpg
 cargo run --locked -p filecraft-cli -- run --recipe recipes/small-attachments.json --output output photo.png scan.jpg
+cargo run --locked -p filecraft-cli -- run --recipe recipes/application-package.json --output output photo.png document.pdf clip.mp4
 ```
 
 CLI output is JSON. Exit codes are 0 (completed), 1 (failed/partial), or 130 (cancelled). Ctrl+C requests cooperative cancellation. The processing engine uses complete bytes and the desktop displays decimal MB.
@@ -50,6 +52,6 @@ On Windows systems with limited build memory, set `$env:CARGO_BUILD_JOBS = '1'` 
 
 ## Current boundaries
 
-Conversion is limited to static 8-bit JPEG, PNG and WebP. Animated images, embedded ICC profiles and higher bit depths require additional engines or color handling. Some other families can be recognized by signature for inspection. Media, PDF, documents, archives and cross-format batch optimization remain on the roadmap. Candidate search is bounded and measures RGB PSNR for JPEG. Perceptual quality, color appearance and the absence of private information visible in pixels require separate checks.
+Raster conversion supports static 8-bit JPEG, PNG and WebP without embedded ICC profiles. Mixed MP4 supports eligible progressive SDR clips up to 1080p, 60 fps and 120 seconds. PDF optimization compresses eligible unfiltered streams and checks the parsed page order, objects and decompressed stream bytes. It can preserve already-optimized or protected PDFs as identical copies. It does not downsample scanned pages. Office formats, archives, perceptual video quality, independent PDF rendering and a portable no-setup video engine remain future work.
 
-[Architecture](docs/architecture/WORKBENCH.md) · [Recipe format](docs/development/RECIPES.md) · [Dependencies](docs/development/DEPENDENCIES.md) · [Competitor research](docs/research/COMPETITORS.md) · [Contributing](CONTRIBUTING.md) · [Security scope](SECURITY.md)
+[Architecture](docs/architecture/WORKBENCH.md) · [Recipe format](docs/development/RECIPES.md) · [Dependencies](docs/development/DEPENDENCIES.md) · [Release readiness](docs/development/RELEASE_READINESS.md) · [Competitor research](docs/research/COMPETITORS.md) · [Contributing](CONTRIBUTING.md) · [Security scope](SECURITY.md)

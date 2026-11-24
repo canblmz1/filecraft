@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "output_format": "mixed",
+  "max_batch_bytes": 20000000,
+  "lossless_only": false
+}

@@ -22,6 +22,7 @@ pub struct Inspection {
     pub name: String,
     pub bytes: u64,
     pub mime: Option<&'static str>,
+    pub format: Option<Format>,
     pub raster_format: Option<Format>,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -49,7 +50,7 @@ pub(crate) fn kind(header: &[u8]) -> (Option<&'static str>, Option<Format>, &[&s
     } else if header.starts_with(b"RIFF") && header.get(8..12) == Some(b"WEBP") {
         (Some(Format::Webp.mime()), Some(Format::Webp), &["webp"])
     } else if header.starts_with(b"%PDF-") {
-        (Some("application/pdf"), None, &["pdf"])
+        (Some(Format::Pdf.mime()), Some(Format::Pdf), &["pdf"])
     } else if header.starts_with(b"GIF87a") || header.starts_with(b"GIF89a") {
         (Some("image/gif"), None, &["gif"])
     } else if header.starts_with(b"PK\x03\x04") || header.starts_with(b"PK\x05\x06") {
@@ -67,10 +68,20 @@ pub(crate) fn kind(header: &[u8]) -> (Option<&'static str>, Option<Format>, &[&s
     } else if header.get(4..8) == Some(b"ftyp")
         && matches!(
             header.get(8..12),
-            Some(b"isom" | b"mp42" | b"mp41" | b"avc1")
+            Some(
+                b"isom"
+                    | b"iso2"
+                    | b"iso4"
+                    | b"iso5"
+                    | b"iso6"
+                    | b"mp42"
+                    | b"mp41"
+                    | b"avc1"
+                    | b"M4V "
+            )
         )
     {
-        (Some("video/mp4"), None, &["mp4", "m4v", "m4a", "mov"])
+        (Some(Format::Mp4.mime()), Some(Format::Mp4), &["mp4", "m4v"])
     } else {
         (None, None, &[])
     }
@@ -104,11 +115,13 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     let mut header = Vec::with_capacity(32);
     (&mut reader).take(32).read_to_end(&mut header)?;
     reader.rewind()?;
-    let (mime, raster_format, extensions) = kind(&header);
+    let (mime, format, extensions) = kind(&header);
+    let raster_format = format.filter(|format| format.is_raster());
     let mut result = Inspection {
         name: name(path),
         bytes: 0,
         mime,
+        format,
         raster_format,
         width: None,
         height: None,
@@ -183,10 +196,11 @@ fn raster<'a>(
             (Box::new(decoder), animated)
         }
         Format::Jpeg => {
-            let mut reader = ImageReader::with_format(reader, format.image_format());
+            let mut reader = ImageReader::with_format(reader, image::ImageFormat::Jpeg);
             reader.limits(limits());
             (Box::new(reader.into_decoder()?), false)
         }
+        _ => return Err(Error::Unsupported("Expected a raster input".into())),
     };
     let (width, height) = decoder.dimensions();
     if u64::from(width) * u64::from(height) > MAX_PIXELS {
