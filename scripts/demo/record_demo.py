@@ -32,7 +32,7 @@ from playwright.async_api import Locator, Page, async_playwright
 
 PORT = 9333
 WIDTH, HEIGHT = 1280, 800
-INPUTS = ("portfolio-photo.png", "signed-forms-scan.pdf", "site-visit.mp4")
+INPUTS = ("IMG_4821.HEIC", "signed-forms-scan.pdf", "IMG_4822.MOV")
 WEBVIEW_ARGS = " ".join([
     f"--remote-debugging-port={PORT}",
     "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion",
@@ -204,17 +204,19 @@ class Pointer:
         await self.page.mouse.up()
 
 
-async def demo(call, page: Page, recorder: Recorder, pointer: Pointer, repo: str) -> None:
-    await call("card", """<div class="tag">FILECRAFT 0.0.1 · OPEN SOURCE</div>
+async def demo(
+    call, page: Page, recorder: Recorder, pointer: Pointer, repo: str, limit_mb: str
+) -> None:
+    await call("card", """<div class="tag">FILECRAFT · FREE AND OPEN SOURCE</div>
       <h1>Fit a whole application package under one size limit.</h1>
-      <p>Photos, PDFs and MP4 clips, processed and verified on your own device.</p>""")
+      <p>iPhone photos, scanned PDFs and HDR videos, processed and verified on your own device.</p>""")
     await asyncio.sleep(0.8)
     recorder.mark("start")
     await asyncio.sleep(3.0)
     await call("card", None)
     await asyncio.sleep(0.7)
 
-    await call("caption", "The application portal accepts <b>20 MB</b> in total.")
+    await call("caption", f"The visa portal accepts <b>{limit_mb} MB</b> in total.")
     await asyncio.sleep(1.2)
     await pointer.glide(page.get_by_role("button", name="Browse files"), 1.1)
     await asyncio.sleep(0.25)
@@ -222,17 +224,24 @@ async def demo(call, page: Page, recorder: Recorder, pointer: Pointer, repo: str
     await page.locator(".file-list > li").nth(len(INPUTS) - 1).wait_for(timeout=60_000)
     await asyncio.sleep(0.5)
     total = (await page.locator(".file-count").inner_text()).split("·")[-1].strip()
-    await call("caption", f"A photo, scanned forms and a phone clip add up to <b>{total}</b>.")
+    await call("caption", f"An iPhone photo, a scanned form and an HDR video: <b>{total}</b>.")
     await pointer.glide(page.locator(".file-list > li").nth(2), 1.2, dx=-120)
     await asyncio.sleep(2.0)
 
-    limit = page.locator(".goal-panel .fields .field").first
-    await pointer.glide(limit, 1.0, dx=-40)
     await call("ring", ".goal-panel .formats")
-    await call("caption", "<b>Mixed batch</b> gives images, PDF and MP4 one shared limit.")
-    await asyncio.sleep(2.4)
+    await call("caption", "<b>Mixed batch</b> gives photos, PDFs and videos one shared limit.")
+    await pointer.glide(page.locator(".goal-panel .formats button").first, 1.0)
+    await asyncio.sleep(1.6)
+    await call("ring", None)
+    field = page.locator(".goal-panel .fields .field input").first
+    await pointer.glide(field, 0.9, dx=-30)
+    await pointer.click()
+    await page.keyboard.press("Control+A")
+    await asyncio.sleep(0.2)
+    await page.keyboard.type(limit_mb, delay=160)
     await call("ring", ".goal-panel .fields .field")
-    await asyncio.sleep(1.4)
+    await call("caption", f"Set the limit to <b>{limit_mb} MB</b>.")
+    await asyncio.sleep(1.8)
     await call("ring", None)
 
     await pointer.glide(page.locator("button.run"), 0.9)
@@ -263,21 +272,29 @@ async def demo(call, page: Page, recorder: Recorder, pointer: Pointer, repo: str
     recorder.mark("result")
     await asyncio.sleep(2.6)
 
-    video = card.locator("details.output summary", has_text="site-visit")
-    await pointer.glide(video, 1.0, dx=-200)
-    await pointer.click()
-    await asyncio.sleep(0.4)
-    await page.evaluate("""() => [...document.querySelectorAll('article.job-card details.output')]
-      .find(item => item.textContent.includes('site-visit'))
-      .scrollIntoView({ behavior: 'smooth', block: 'center' })""")
-    await call("caption", "Every result lists what was verified. Originals stay untouched.")
-    await asyncio.sleep(4.2)
+    for name, caption in (
+        ("IMG_4821", "The iPhone photo becomes a JPEG. Its EXIF, including the GPS position, is removed."),
+        ("signed-forms-scan", "Scanned pages are downsampled to 200 dpi and checked image by image."),
+        ("IMG_4822", "The HDR clip becomes an upright SDR MP4 that any portal can play."),
+    ):
+        summary = card.locator("details.output summary", has_text=name)
+        await pointer.glide(summary, 1.0, dx=-200)
+        await pointer.click()
+        await asyncio.sleep(0.4)
+        await page.evaluate(
+            """(name) => [...document.querySelectorAll('article.job-card details.output')]
+              .find(item => item.textContent.includes(name))
+              .scrollIntoView({ behavior: 'smooth', block: 'center' })""",
+            name,
+        )
+        await call("caption", caption)
+        await asyncio.sleep(3.4)
 
     before, after = total, (await card.locator(".stats div").nth(1).locator("strong").inner_text())
     await call("caption", None)
     await call("card", f"""<div class="tag">FREE · MIT LICENSE · NO ACCOUNT · NO TELEMETRY</div>
       <h1>{before} → {after}, verified.</h1>
-      <p>Images, PDF and MP4 clips under one size limit, processed locally.</p>
+      <p>Photos, scanned PDFs and phone videos under one size limit, processed locally.</p>
       <div><code>{repo}</code></div>""")
     await asyncio.sleep(4.0)
     recorder.mark("end")
@@ -327,7 +344,7 @@ async def record(args: argparse.Namespace) -> None:
             recorder = Recorder(work)
             await recorder.start(page)
             await asyncio.sleep(0.5)
-            await demo(call, page, recorder, Pointer(page), args.repo)
+            await demo(call, page, recorder, Pointer(page), args.repo, args.limit_mb)
             await recorder.stop(work)
             await browser.close()
     finally:
@@ -394,6 +411,7 @@ def main() -> None:
     parser.add_argument("--output", help="Empty folder for FileCraft results")
     parser.add_argument("--work", required=True, help="Scratch folder for frames and timing")
     parser.add_argument("--repo", default="github.com/canblmz1/filecraft")
+    parser.add_argument("--limit-mb", default="5", help="Batch limit typed into the goal panel")
     parser.add_argument("--mp4", help="Rendered MP4 path (default: <work>/filecraft-demo.mp4)")
     parser.add_argument("--gif", default="docs/media/filecraft-demo.gif")
     parser.add_argument("--fast-seconds", type=float, default=4.5)

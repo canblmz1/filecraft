@@ -1,24 +1,32 @@
 """Generate the synthetic inputs used by the FileCraft demo recording.
 
-Creates three files that resemble a typical application package:
+Creates three files shaped like a real application package from a phone:
 
-* portfolio-photo.png  - a 3000 x 2000 procedural landscape with film grain
-* signed-forms-scan.pdf - four 150 dpi grayscale "scans" stored without stream compression
-* site-visit.mp4        - a 1080 x 1920 H.264/AAC phone-style clip at a high bitrate
+* IMG_4821.HEIC         - a 4032 x 3024 iPhone-style HEIC: 512 px HEVC tiles,
+                          Display P3 color and EXIF with a made-up GPS position
+* signed-forms-scan.pdf - four 300 dpi grayscale pages stored as JPEG, the way
+                          office scanners write them
+* IMG_4822.MOV          - a 20 s portrait iPhone-style clip: 10-bit HEVC with
+                          HLG HDR tags, a rotation flag, AAC audio and a
+                          timecode track
 
 Every pixel, sample and glyph is generated locally, so the files can be shared
-with the recording. Requires Python 3.10+, Pillow, NumPy and FFmpeg on PATH.
+with the recording. Requires Python 3.10+, Pillow, pillow-heif, NumPy and an
+FFmpeg with libx265 on PATH.
 
     python scripts/demo/make_inputs.py <output-directory>
 """
 
 from __future__ import annotations
 
+import io
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
+import pillow_heif
 from PIL import Image, ImageDraw, ImageFont
 
 SEED = 20261124
@@ -44,8 +52,7 @@ def ridge(rng: np.random.Generator, width: int, base: float, roughness: float) -
     return height
 
 
-def photo(path: Path, rng: np.random.Generator) -> None:
-    width, height = 3000, 2000
+def landscape(rng: np.random.Generator, width: int, height: int) -> Image.Image:
     y = np.linspace(0.0, 1.0, height)[:, None]
     x = np.linspace(0.0, 1.0, width)[None, :]
     top, horizon = np.array([28, 54, 112]), np.array([246, 170, 110])
@@ -73,42 +80,65 @@ def photo(path: Path, rng: np.random.Generator) -> None:
         image = np.where(mask, fill, image)
 
     grain = rng.normal(0.0, 2.6, size=(height, width, 1))
-    image = np.clip(image + grain, 0, 255).astype(np.uint8)
-    Image.fromarray(image, "RGB").save(path, optimize=False)
+    return Image.fromarray(np.clip(image + grain, 0, 255).astype(np.uint8), "RGB")
+
+
+def gps(degrees: float) -> tuple[float, float, float]:
+    whole = int(degrees)
+    minutes = (degrees - whole) * 60
+    return (float(whole), float(int(minutes)), round((minutes - int(minutes)) * 60, 2))
+
+
+def heic(path: Path, picture: Image.Image) -> None:
+    exif = Image.Exif()
+    exif[0x010F] = "FileCraft"
+    exif[0x0110] = "Synthetic phone camera"
+    gps_ifd = {1: "N", 2: gps(41.2867), 3: "E", 4: gps(36.33)}
+    exif[0x8825] = gps_ifd
+    pillow_heif.options.GRID_TILE_SIZE = 512
+    pillow_heif.from_pillow(picture).save(
+        path,
+        quality=88,
+        exif=exif.tobytes(),
+        color_primaries=12,
+        transfer_characteristic=13,
+        matrix_coefficients=6,
+        full_range_flag=1,
+    )
 
 
 def scan_page(number: int, rng: np.random.Generator) -> Image.Image:
-    width, height = 1275, 1650
+    width, height = 2550, 3300
     page = Image.new("L", (width, height), 247)
     draw = ImageDraw.Draw(page)
-    title, label, body = font(42), font(24), font(21)
+    title, label, body = font(84), font(48), font(42)
 
-    draw.text((110, 110), "Application form", font=title, fill=30)
-    draw.text((110, 170), f"Synthetic sample for FileCraft demo  ·  page {number} of 4", font=body, fill=90)
-    draw.line((110, 215, width - 110, 215), fill=60, width=3)
+    draw.text((220, 220), "Application form", font=title, fill=30)
+    draw.text((220, 340), f"Synthetic sample for FileCraft demo  ·  page {number} of 4", font=body, fill=90)
+    draw.line((220, 430, width - 220, 430), fill=60, width=6)
 
-    top = 270
+    top = 540
     for index in range(9):
-        y = top + index * 112
-        draw.text((110, y), f"Field {number}.{index + 1}", font=label, fill=50)
-        draw.rectangle((110, y + 36, width - 110, y + 86), outline=80, width=2)
+        y = top + index * 224
+        draw.text((220, y), f"Field {number}.{index + 1}", font=label, fill=50)
+        draw.rectangle((220, y + 72, width - 220, y + 172), outline=80, width=4)
         words = rng.integers(4, 9)
         text = " ".join("".join(chr(rng.integers(97, 123)) for _ in range(rng.integers(3, 9))) for _ in range(words))
-        draw.text((126, y + 47), text.capitalize(), font=body, fill=35)
+        draw.text((252, y + 94), text.capitalize(), font=body, fill=35)
 
-    points = [(760 + i * 9, 1370 + int(28 * np.sin(i / 3.2) + rng.integers(-6, 7))) for i in range(48)]
-    draw.line(points, fill=25, width=4, joint="curve")
-    draw.line((740, 1430, width - 110, 1430), fill=70, width=2)
-    draw.text((740, 1442), "Signature", font=body, fill=80)
+    points = [(1520 + i * 18, 2740 + int(56 * np.sin(i / 3.2) + rng.integers(-12, 13))) for i in range(48)]
+    draw.line(points, fill=25, width=8, joint="curve")
+    draw.line((1480, 2860, width - 220, 2860), fill=70, width=4)
+    draw.text((1480, 2884), "Signature", font=body, fill=80)
 
     pixels = np.asarray(page, dtype=np.int16)
-    speckles = rng.random(pixels.shape) < 0.004
-    pixels = np.where(speckles, pixels - rng.integers(30, 90, pixels.shape), pixels)
+    noise = rng.normal(0.0, 3.0, pixels.shape)
+    speckles = rng.random(pixels.shape) < 0.002
+    pixels = np.where(speckles, pixels - rng.integers(30, 90, pixels.shape), pixels + noise)
     return Image.fromarray(np.clip(pixels, 0, 255).astype(np.uint8), "L")
 
 
 def pdf(path: Path, rng: np.random.Generator) -> None:
-    pages = [scan_page(number, rng) for number in range(1, 5)]
     objects: list[bytes] = []
 
     def add(body: bytes) -> int:
@@ -121,13 +151,16 @@ def pdf(path: Path, rng: np.random.Generator) -> None:
     catalog = add(b"")
     tree = add(b"")
     kids = []
-    for page in pages:
+    for number in range(1, 5):
+        page = scan_page(number, rng)
+        encoded = io.BytesIO()
+        page.save(encoded, "JPEG", quality=92)
         image = add(stream(
             f"/Type /XObject /Subtype /Image /Width {page.width} /Height {page.height} "
-            "/ColorSpace /DeviceGray /BitsPerComponent 8",
-            page.tobytes(),
+            "/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode",
+            encoded.getvalue(),
         ))
-        content = add(stream("", f"q 612 0 0 792 0 0 cm /Scan Do Q".encode()))
+        content = add(stream("", b"q 612 0 0 792 0 0 cm /Scan Do Q"))
         kids.append(add(
             f"<< /Type /Page /Parent {tree} 0 R /MediaBox [0 0 612 792] "
             f"/Resources << /XObject << /Scan {image} 0 R >> >> /Contents {content} 0 R >>".encode()
@@ -149,28 +182,33 @@ def pdf(path: Path, rng: np.random.Generator) -> None:
     path.write_bytes(output)
 
 
-def video(path: Path, landscape: Path) -> None:
-    """Pan a portrait window across the landscape with sensor-like grain.
-
-    Phones often record at a fixed high bitrate, so the clip is encoded as
-    constant-bitrate H.264 at 14 Mbit/s with stereo AAC audio.
-    """
-    seconds = 24
-    picture = "crop=1080:1920:'min(1920,80*t)':40,noise=alls=2:allf=t,format=yuv420p"
-    tone = (
-        f"aevalsrc='0.10*sin(2*PI*220*t)+0.07*sin(2*PI*277.2*t)+0.05*sin(2*PI*329.6*t)'"
-        f":s=48000:d={seconds},aformat=channel_layouts=stereo"
-    )
-    subprocess.run([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-loop", "1", "-framerate", "30", "-t", str(seconds), "-i", str(landscape),
-        "-f", "lavfi", "-i", tone,
-        "-map", "0:v", "-map", "1:a", "-map_metadata", "-1", "-vf", picture,
-        "-c:v", "libx264", "-preset", "medium",
-        "-b:v", "14M", "-minrate", "14M", "-maxrate", "14M", "-bufsize", "14M", "-x264-params", "nal-hrd=cbr",
-        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart",
-        str(path),
-    ], check=True)
+def mov(path: Path, picture: Image.Image) -> None:
+    """Pan across the landscape like a phone held sideways, then flag it as portrait."""
+    seconds = 20
+    with tempfile.TemporaryDirectory() as work:
+        still = Path(work) / "landscape.png"
+        flat = Path(work) / "flat.mov"
+        picture.resize((3000, 2250)).save(still)
+        tone = (
+            f"aevalsrc='0.10*sin(2*PI*220*t)+0.07*sin(2*PI*277.2*t)+0.05*sin(2*PI*329.6*t)'"
+            f":s=44100:d={seconds},aformat=channel_layouts=stereo"
+        )
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-loop", "1", "-framerate", "30", "-t", str(seconds), "-i", str(still),
+            "-f", "lavfi", "-i", tone,
+            "-map", "0:v", "-map", "1:a", "-map_metadata", "-1",
+            "-vf", "crop=1920:1080:'min(1080,54*t)':600,noise=alls=2:allf=t,format=yuv420p10le",
+            "-c:v", "libx265", "-preset", "fast", "-b:v", "18M", "-tag:v", "hvc1",
+            "-x265-params", "log-level=error:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc",
+            "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc",
+            "-c:a", "aac", "-b:a", "192k", "-timecode", "14:02:10:00", "-shortest", "-f", "mov",
+            str(flat),
+        ], check=True)
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-display_rotation", "90",
+            "-i", str(flat), "-map", "0", "-c", "copy", "-f", "mov", str(path),
+        ], check=True)
 
 
 def main() -> int:
@@ -180,9 +218,10 @@ def main() -> int:
     target = Path(sys.argv[1])
     target.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(SEED)
-    photo(target / "portfolio-photo.png", rng)
+    picture = landscape(rng, 4032, 3024)
+    heic(target / "IMG_4821.HEIC", picture)
     pdf(target / "signed-forms-scan.pdf", rng)
-    video(target / "site-visit.mp4", target / "portfolio-photo.png")
+    mov(target / "IMG_4822.MOV", picture)
     for item in sorted(target.iterdir()):
         print(f"{item.name}\t{item.stat().st_size:,} bytes")
     return 0
