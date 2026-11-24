@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.2
 
 - Mixed batches re-encode opaque photos as JPEG above a 32 dB PSNR floor when the limit requires it. `min_psnr_db` now also applies to mixed batches.
 - RGB ICC color profiles are carried over and verified instead of being refused. The raster limit is now 50 megapixels.

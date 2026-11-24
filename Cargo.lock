@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "filecraft-cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "clap",
  "ctrlc",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "filecraft-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "fs2",
  "image",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "filecraft-desktop"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "filecraft-core",
  "fs2",

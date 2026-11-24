@@ -368,7 +368,7 @@ export default function App() {
       <div className="nav-caption">WORKSPACE</div>
       <nav aria-label="Workspace">{nav.map(({ title, icon: Icon }) => <button key={title} aria-label={title} className={view === title ? 'current' : ''} aria-current={view === title ? 'page' : undefined} onClick={() => setView(title)}><Icon size={18} strokeWidth={1.8} /><span>{title}</span>{view === title && <span className="nav-dot" />}</button>)}</nav>
       <div className="sidebar-status"><span className="status-icon"><HardDrive size={19} /></span><div><strong>Local workspace</strong><small>Runs on your device</small></div></div>
-      <div className="version"><span>v0.0.1</span><span>OPEN SOURCE</span></div>
+      <div className="version"><span>v0.0.2</span><span>OPEN SOURCE</span></div>
     </aside>
     <div className="application">
       <header className="toolbar"><div className="breadcrumb"><Layers2 size={16} /><span>Workspace</span><span className="slash">/</span><strong>{view}</strong></div><div className="actions">
