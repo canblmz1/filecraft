@@ -12,7 +12,7 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-filecraft-core.workspace = true
+filecraft-core = { workspace = true, features = ["installer"] }
 fs2 = "0.4"
 serde.workspace = true
 serde_json.workspace = true

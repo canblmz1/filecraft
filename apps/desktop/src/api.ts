@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 
-export type Format = 'jpeg' | 'png' | 'webp' | 'pdf' | 'mp4'
+export type Format = 'jpeg' | 'png' | 'webp' | 'pdf' | 'mp4' | 'mov' | 'heic'
 export type OutputMode = Extract<Format, 'jpeg' | 'png' | 'webp'> | 'mixed'
 export type Recipe = {
   version: 1
@@ -28,6 +28,16 @@ export type FileReport = {
   psnr_db: number | null; pixels_identical: boolean; orientation_applied: boolean
   metadata_removed: string[]; verified_checks: string[]; unsupported_checks: string[]
   unchanged?: boolean; pdf_pages?: number | null; video_duration_seconds?: number | null; video_crf?: number | null
+  video_tone_mapped?: boolean; icc_profile_preserved?: boolean
+  pdf_images?: { images_reencoded: number; max_dpi: number; jpeg_quality: number; min_psnr_db: number } | null
+}
+export type EngineStatus = {
+  available: boolean; source: 'managed' | 'path' | 'environment' | null; ffmpeg: string | null; version: string | null
+  hdr_tone_mapping: boolean; heic: boolean; managed_directory: string | null; installable: boolean; install_bytes: number | null
+}
+export type EngineInstall = {
+  running: boolean; error: string | null; status: EngineStatus | null
+  progress: { stage: 'downloading' | 'verifying' | 'extracting' | 'testing'; received_bytes: number; total_bytes: number } | null
 }
 export type Report = {
   status: 'completed' | 'partial' | 'failed' | 'cancelled'
@@ -61,6 +71,10 @@ export const api = {
   cancel: (id: string) => invoke<void>('cancel_job', { id }),
   history: () => invoke<Job[]>('job_history'),
   capabilities: () => invoke<Capability[]>('engine_capabilities'),
+  videoEngine: () => invoke<EngineStatus>('video_engine_status'),
+  installEngine: () => invoke<void>('install_engine'),
+  installState: () => invoke<EngineInstall>('engine_install_state'),
+  cancelInstall: () => invoke<void>('cancel_engine_install'),
   async importRecipe() {
     const path = await open({ filters: json, title: 'Import a FileCraft recipe' })
     return path ? invoke<Recipe>('import_recipe', { path }) : null
@@ -96,6 +110,13 @@ export function size(value: number): string {
 
 export const basename = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
 export const label = (format: Format | OutputMode) => ({
-  jpeg: 'JPEG', png: 'PNG', webp: 'WebP', pdf: 'PDF', mp4: 'MP4', mixed: 'Mixed batch',
+  jpeg: 'JPEG', png: 'PNG', webp: 'WebP', pdf: 'PDF', mp4: 'MP4', mov: 'MOV', heic: 'HEIC', mixed: 'Mixed batch',
 })[format]
+export const needsVideoEngine = (format: Format | null | undefined) => format === 'mp4' || format === 'mov' || format === 'heic'
+
+/** True when an available engine can take `format` toward the goal. */
+export function accepts(engines: Capability[], format: Format | null | undefined, goal: OutputMode) {
+  return !!format && engines.some(engine => engine.available && engine.input_formats.includes(format)
+    && (goal === 'mixed' || engine.output_formats.includes(goal)))
+}
 export const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)

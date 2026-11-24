@@ -10,7 +10,8 @@ use std::{
 };
 
 use filecraft_core::{
-    Capability, Control, Inspection, Phase, Progress, Recipe, capabilities, inspect, run,
+    Capability, Control, EngineStatus, Inspection, InstallProgress, Phase, Progress, Recipe,
+    capabilities, inspect, install_video_engine, run, set_data_dir, video_engine,
 };
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -122,10 +123,83 @@ impl Jobs {
 }
 
 #[tauri::command]
-async fn engine_capabilities() -> CommandResult<[Capability; 3]> {
+async fn engine_capabilities() -> CommandResult<Vec<Capability>> {
     async_runtime::spawn_blocking(capabilities)
         .await
         .map_err(message)
+}
+
+#[derive(Clone, Default, Serialize)]
+struct EngineInstall {
+    running: bool,
+    progress: Option<InstallProgress>,
+    error: Option<String>,
+    status: Option<EngineStatus>,
+}
+
+#[derive(Clone, Default)]
+struct Installer {
+    state: Arc<Mutex<EngineInstall>>,
+    control: Arc<Mutex<Option<Arc<Control>>>>,
+}
+
+#[tauri::command]
+async fn video_engine_status() -> CommandResult<EngineStatus> {
+    async_runtime::spawn_blocking(video_engine)
+        .await
+        .map_err(message)
+}
+
+#[tauri::command]
+fn install_engine(installer: State<'_, Installer>, jobs: State<'_, Jobs>) -> CommandResult<()> {
+    if !jobs.active.lock().map_err(message)?.is_empty() {
+        return Err("Wait for the current job to finish before installing the video engine".into());
+    }
+    let installer = installer.inner().clone();
+    {
+        let mut state = installer.state.lock().map_err(message)?;
+        if state.running {
+            return Ok(());
+        }
+        *state = EngineInstall {
+            running: true,
+            ..EngineInstall::default()
+        };
+    }
+    let control = Arc::new(Control::default());
+    *installer.control.lock().map_err(message)? = Some(control.clone());
+    async_runtime::spawn_blocking(move || {
+        let progress_state = installer.state.clone();
+        let result = install_video_engine(&control, |progress| {
+            if let Ok(mut state) = progress_state.lock() {
+                state.progress = Some(progress);
+            }
+        });
+        if let Ok(mut state) = installer.state.lock() {
+            state.running = false;
+            match result {
+                Ok(status) => state.status = Some(status),
+                Err(error) => state.error = Some(error.to_string()),
+            }
+        }
+        if let Ok(mut current) = installer.control.lock() {
+            *current = None;
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn engine_install_state(installer: State<'_, Installer>) -> CommandResult<EngineInstall> {
+    Ok(installer.state.lock().map_err(message)?.clone())
+}
+
+#[tauri::command]
+fn cancel_engine_install(installer: State<'_, Installer>) -> CommandResult<()> {
+    if let Some(control) = installer.control.lock().map_err(message)?.as_ref() {
+        control.cancel();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -188,8 +262,12 @@ fn start_job(
     destination: PathBuf,
     recipe: Recipe,
     jobs: State<'_, Jobs>,
+    installer: State<'_, Installer>,
 ) -> CommandResult<Job> {
     recipe.validate().map_err(message)?;
+    if installer.state.lock().map_err(message)?.running {
+        return Err("Wait for the video engine installation to finish".into());
+    }
     if paths.is_empty() {
         return Err("Add at least one file".into());
     }
@@ -326,11 +404,18 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            app.manage(Jobs::open(app.path().app_local_data_dir()?)?);
+            let data = app.path().app_local_data_dir()?;
+            set_data_dir(data.clone());
+            app.manage(Jobs::open(data)?);
+            app.manage(Installer::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             engine_capabilities,
+            video_engine_status,
+            install_engine,
+            engine_install_state,
+            cancel_engine_install,
             inspect_files,
             import_recipe,
             export_recipe,

@@ -34,7 +34,7 @@ impl Control {
         self.cancelled.store(true, Ordering::Release);
     }
 
-    fn check(&self, deadline: Option<Instant>) -> Result<()> {
+    pub(crate) fn check(&self, deadline: Option<Instant>) -> Result<()> {
         if self.cancelled.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
         }
@@ -109,6 +109,9 @@ pub struct FileReport {
     pub pdf_pages: Option<usize>,
     pub video_duration_seconds: Option<f64>,
     pub video_crf: Option<u8>,
+    pub video_tone_mapped: bool,
+    pub pdf_images: Option<pdf::ImageSummary>,
+    pub icc_profile_preserved: bool,
     pub verified_checks: Vec<&'static str>,
     pub unsupported_checks: Vec<&'static str>,
 }
@@ -138,10 +141,24 @@ struct Candidate {
 }
 
 enum Evidence {
-    Raster { quality: Option<u8>, mse: f64 },
+    Raster {
+        quality: Option<u8>,
+        mse: f64,
+        icc: bool,
+    },
     RasterCopy,
-    Pdf { pages: usize, compressed: bool },
-    Video { duration: f64, crf: Option<u8> },
+    Pdf {
+        pages: usize,
+        compressed: bool,
+        images: Option<pdf::ImageSummary>,
+    },
+    Video {
+        duration: f64,
+        crf: Option<u8>,
+        /// Displayed output width and height after rotation and scaling.
+        size: (u32, u32),
+        tone_mapped: bool,
+    },
 }
 
 impl Candidate {
@@ -153,9 +170,17 @@ impl Candidate {
     }
 
     fn penalty(&self) -> f64 {
-        match self.evidence {
-            Evidence::Raster { mse, .. } => mse,
-            Evidence::Video { crf: Some(crf), .. } => f64::from(crf - 17),
+        match &self.evidence {
+            Evidence::Raster { mse, .. } => *mse,
+            Evidence::Video {
+                crf: Some(crf),
+                size,
+                ..
+            } => video::penalty(*crf, *size),
+            Evidence::Pdf {
+                images: Some(images),
+                ..
+            } => images.penalty(),
             _ => 0.0,
         }
     }
@@ -261,13 +286,13 @@ fn execute(
             })
             .ok_or_else(|| {
                 Error::Unsupported(format!(
-                    "{}: select Mixed batch for PDF and MP4, or choose a supported raster image",
+                    "{}: select Mixed batch for PDF and video, or choose a supported image",
                     name(path)
                 ))
             })?;
         if !engine.available {
             return Err(Error::Unsupported(format!(
-                "{}: install FFmpeg with libx264 and AAC plus FFprobe on PATH, then restart FileCraft",
+                "{}: install the video engine from the Engines page, or put FFmpeg with libx264, AAC and zscale plus FFprobe on PATH",
                 name(path)
             )));
         }
@@ -315,15 +340,23 @@ fn execute(
         search_recipe.lossless_only = true;
     }
     let qualities = quality_ladder(&search_recipe);
+    let goal = Goal {
+        recipe: &search_recipe,
+        keep_originals: recipe.lossless_only,
+    };
+    let lossy = !search_recipe.lossless_only;
     let mut plans = Vec::new();
     for (index, input) in inputs.into_iter().enumerate() {
         update.phase = Phase::Running;
         update.file_index = Some(index);
         update.candidates_finished = 0;
-        update.candidates_total = if input.format == Format::Mp4 && !search_recipe.lossless_only {
-            video::QUALITY.len() + 1
-        } else {
-            qualities.len()
+        update.candidates_total = match input.format {
+            format if format.is_video() => 1 + if lossy { video::LADDER.len() } else { 1 },
+            Format::Pdf => 1 + if lossy { pdf::LEVELS.len() } else { 0 },
+            _ if mixed => raster_encodings(&goal, input.format, true, &qualities)
+                .len()
+                .max(1),
+            _ => qualities.len(),
         };
         progress(update);
         let update_candidate = |phase, count| {
@@ -333,7 +366,7 @@ fn execute(
         };
         let result = prepare(
             input,
-            &search_recipe,
+            &goal,
             &qualities,
             &workspace,
             control,
@@ -372,50 +405,73 @@ fn execute(
         if recipe.max_batch_bytes.is_some() {
             checks.push("planned batch byte limit");
         }
-        if recipe.min_psnr_db.is_some() {
+        if recipe.min_psnr_db.is_some() || (mixed && psnr_db.is_some()) {
             checks.push("minimum PSNR");
         }
-        let (
-            jpeg_quality,
-            pixels_identical,
-            unchanged,
-            pdf_pages,
-            video_duration_seconds,
-            video_crf,
-        ) = match candidate.evidence {
-            Evidence::Raster { quality, mse } => (quality, mse == 0.0, false, None, None, None),
-            Evidence::RasterCopy => (None, true, true, None, None, None),
-            Evidence::Pdf { pages, compressed } => {
-                (None, false, !compressed, Some(pages), None, None)
-            }
-            Evidence::Video { duration, crf } => {
-                (None, false, crf.is_none(), None, Some(duration), crf)
-            }
-        };
-        report.files.push(FileReport {
+        let mut file = FileReport {
             input_name: name(&plan.input.path),
             input_format: plan.input.format,
             input_sha256: plan.checksum,
             input_bytes: plan.input.bytes,
-            output_path,
+            output_path: display_path(output_path),
             output_format: candidate.format,
             output_bytes: candidate.size,
             output_sha256: candidate.checksum,
             width: plan.dimensions.0,
             height: plan.dimensions.1,
             duration_ms: plan.duration_ms,
-            jpeg_quality,
+            jpeg_quality: None,
             psnr_db,
-            pixels_identical,
-            orientation_applied: !unchanged && plan.orientation_applied,
-            metadata_removed: if unchanged { Vec::new() } else { plan.metadata },
-            unchanged,
-            pdf_pages,
-            video_duration_seconds,
-            video_crf,
+            pixels_identical: false,
+            orientation_applied: false,
+            metadata_removed: Vec::new(),
+            unchanged: false,
+            pdf_pages: None,
+            video_duration_seconds: None,
+            video_crf: None,
+            video_tone_mapped: false,
+            pdf_images: None,
+            icc_profile_preserved: false,
             verified_checks: checks,
             unsupported_checks,
-        });
+        };
+        match candidate.evidence {
+            Evidence::Raster { quality, mse, icc } => {
+                file.jpeg_quality = quality;
+                file.pixels_identical = mse == 0.0;
+                file.icc_profile_preserved = icc;
+            }
+            Evidence::RasterCopy => {
+                file.pixels_identical = true;
+                file.unchanged = true;
+            }
+            Evidence::Pdf {
+                pages,
+                compressed,
+                images,
+            } => {
+                file.unchanged = !compressed;
+                file.pdf_pages = Some(pages);
+                file.pdf_images = images;
+            }
+            Evidence::Video {
+                duration,
+                crf,
+                size,
+                tone_mapped,
+            } => {
+                file.unchanged = crf.is_none();
+                file.video_duration_seconds = Some(duration);
+                file.video_crf = crf;
+                file.video_tone_mapped = tone_mapped;
+                (file.width, file.height) = size;
+            }
+        }
+        if !file.unchanged {
+            file.orientation_applied = plan.orientation_applied;
+            file.metadata_removed = plan.metadata;
+        }
+        report.files.push(file);
         update.files_finished += 1;
         update.steps_finished += 1;
         progress(update);
@@ -423,19 +479,36 @@ fn execute(
     Ok(())
 }
 
+/// Report Windows paths without the `\\?\` prefix that canonicalization adds.
+fn display_path(path: PathBuf) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path,
+    }
+}
+
 fn evidence_checks(evidence: &Evidence) -> (Vec<&'static str>, Vec<&'static str>) {
     match evidence {
-        Evidence::Raster { mse, .. } => {
+        Evidence::Raster { mse, icc, .. } => {
             let mut checks = vec![
                 "decoded output",
                 "orientation-normalized dimensions",
-                "EXIF/ICC/XMP/IPTC decoder probes",
+                "EXIF/XMP/IPTC decoder probes",
             ];
             let mut unchecked = vec![
                 "visual color fidelity",
                 "sensitive pixels",
                 "proprietary metadata beyond the probes",
             ];
+            if *icc {
+                checks.push("ICC profile bytes carried over");
+            }
             if *mse == 0.0 {
                 checks.push("decoded RGBA pixels identical after orientation");
             } else {
@@ -449,19 +522,31 @@ fn evidence_checks(evidence: &Evidence) -> (Vec<&'static str>, Vec<&'static str>
             vec!["privacy metadata removal"],
         ),
         Evidence::Pdf {
-            compressed: true, ..
-        } => (
-            vec![
+            compressed: true,
+            images,
+            ..
+        } => {
+            let mut checks = vec![
                 "PDF strict parse",
                 "page order",
                 "parsed PDF objects and trailer",
-                "changed streams decode to original bytes",
-            ],
-            vec![
+            ];
+            let mut unchecked = vec![
                 "independent rendering",
                 "PDF active content or privacy metadata removal",
-            ],
-        ),
+            ];
+            if images.is_some() {
+                checks.extend([
+                    "unchanged objects decode identically",
+                    "re-encoded page images decode at the planned size",
+                    "RGB PSNR of re-encoded page images",
+                ]);
+                unchecked.extend(["text legibility", "OCR text layer alignment"]);
+            } else {
+                checks.push("changed streams decode to original bytes");
+            }
+            (checks, unchecked)
+        }
         Evidence::Pdf {
             compressed: false, ..
         } => (
@@ -472,26 +557,29 @@ fn evidence_checks(evidence: &Evidence) -> (Vec<&'static str>, Vec<&'static str>
                 "PDF active content or privacy metadata removal",
             ],
         ),
-        Evidence::Video { crf, .. } => {
+        Evidence::Video {
+            crf, tone_mapped, ..
+        } => {
             let checks = if crf.is_some() {
                 vec![
                     "complete decode",
-                    "H.264 and optional AAC",
-                    "dimensions",
+                    "H.264 and optional AAC in MP4",
+                    "rotation-corrected dimensions",
                     "video frame count",
                     "duration and audio stream properties",
                 ]
             } else {
-                vec!["MP4 probed and fully decoded", "original bytes identical"]
+                vec!["video probed and fully decoded", "original bytes identical"]
             };
-            (
-                checks,
-                vec![
-                    "perceptual audio/video quality",
-                    "color fidelity",
-                    "metadata equivalence or privacy",
-                ],
-            )
+            let mut unchecked = vec![
+                "perceptual audio/video quality",
+                "color fidelity",
+                "metadata equivalence or privacy",
+            ];
+            if *tone_mapped {
+                unchecked.push("HDR to SDR tone mapping appearance");
+            }
+            (checks, unchecked)
         }
     }
 }
@@ -527,127 +615,283 @@ fn quality_ladder(recipe: &Recipe) -> Vec<Option<u8>> {
         .collect()
 }
 
+/// JPEG qualities tried for opaque photos in a mixed batch, best first.
+pub(crate) const MIXED_JPEG: [u8; 6] = [90, 82, 74, 66, 58, 50];
+/// Lowest RGB PSNR accepted for lossy images in a mixed batch unless the
+/// recipe sets its own floor.
+pub(crate) const MIXED_MIN_PSNR: u8 = 32;
+
+struct Goal<'a> {
+    recipe: &'a Recipe,
+    /// The person asked to keep originals byte-for-byte where possible.
+    keep_originals: bool,
+}
+
 fn prepare(
     input: Input,
-    recipe: &Recipe,
+    goal: &Goal,
+    qualities: &[Option<u8>],
+    workspace: &TempDir,
+    control: &Control,
+    deadline: Option<Instant>,
+    update: impl FnMut(Phase, usize),
+) -> Result<Plans> {
+    let started = Instant::now();
+    let path = input.path.clone();
+    let check = || control.check(deadline);
+    match input.format {
+        Format::Pdf => prepare_pdf(input, goal.recipe, workspace, check, started, update),
+        format if format.is_video() => {
+            prepare_video(input, goal, workspace, check, started, update)
+        }
+        _ => prepare_raster(
+            input, goal, qualities, workspace, control, deadline, update, started,
+        ),
+    }
+    .map_err(|error| file_error(&path, error))
+}
+
+fn raster_encodings(
+    goal: &Goal,
+    format: Format,
+    opaque: bool,
+    qualities: &[Option<u8>],
+) -> Vec<(Format, Option<u8>)> {
+    let recipe = goal.recipe;
+    if recipe.output_format != Format::Mixed {
+        return qualities
+            .iter()
+            .map(|quality| (recipe.output_format, *quality))
+            .collect();
+    }
+    let jpeg = MIXED_JPEG.map(|quality| (Format::Jpeg, Some(quality)));
+    if format == Format::Heic {
+        // HEIC is converted for compatibility unless the originals must stay intact.
+        return match (goal.keep_originals, opaque, recipe.lossless_only) {
+            (true, _, _) => Vec::new(),
+            (false, false, _) => vec![(Format::Webp, None)],
+            (false, true, true) => jpeg[..1].to_vec(),
+            (false, true, false) => jpeg.to_vec(),
+        };
+    }
+    let mut encodings = vec![(Format::Webp, None)];
+    if opaque && !recipe.lossless_only {
+        encodings.extend(jpeg);
+    }
+    encodings
+}
+
+fn encode_raster(
+    format: Format,
+    quality: Option<u8>,
+    rgba: &image::RgbaImage,
+    rgb: Option<&image::RgbImage>,
+    icc: Option<&[u8]>,
+) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let (width, height) = rgba.dimensions();
+    let profile =
+        |encoder: &mut dyn FnMut(
+            Vec<u8>,
+        )
+            -> std::result::Result<(), image::error::UnsupportedError>| {
+            icc.map_or(Ok(()), |icc| {
+                encoder(icc.to_vec()).map_err(image::ImageError::Unsupported)
+            })
+        };
+    match format {
+        Format::Jpeg => {
+            let rgb = rgb.ok_or_else(|| Error::Invalid("Missing JPEG input pixels".into()))?;
+            let mut encoder = JpegEncoder::new_with_quality(&mut output, quality.unwrap_or(90));
+            profile(&mut |icc| encoder.set_icc_profile(icc))?;
+            encoder.write_image(rgb, width, height, ExtendedColorType::Rgb8)?;
+        }
+        Format::Png => {
+            let mut encoder = PngEncoder::new_with_quality(
+                &mut output,
+                CompressionType::Best,
+                FilterType::Adaptive,
+            );
+            profile(&mut |icc| encoder.set_icc_profile(icc))?;
+            encoder.write_image(rgba, width, height, ExtendedColorType::Rgba8)?;
+        }
+        Format::Webp => {
+            let mut encoder = WebPEncoder::new_lossless(&mut output);
+            profile(&mut |icc| encoder.set_icc_profile(icc))?;
+            encoder.write_image(rgba, width, height, ExtendedColorType::Rgba8)?;
+        }
+        _ => return Err(Error::Unsupported("Expected a raster output".into())),
+    }
+    Ok(output)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_raster(
+    input: Input,
+    goal: &Goal,
     qualities: &[Option<u8>],
     workspace: &TempDir,
     control: &Control,
     deadline: Option<Instant>,
     mut update: impl FnMut(Phase, usize),
+    started: Instant,
 ) -> Result<Plans> {
-    let started = Instant::now();
-    let path = input.path.clone();
-    (|| {
-        if input.format == Format::Pdf {
-            return prepare_pdf(input, recipe, workspace, || control.check(deadline), started, update);
-        }
-        if input.format == Format::Mp4 {
-            return prepare_video(input, recipe, workspace, || control.check(deadline), started, update);
-        }
-        let mixed = recipe.output_format == Format::Mixed;
-        let output_format = if mixed { Format::Webp } else { recipe.output_format };
-        let bytes = snapshot_bytes(&input)?;
-        control.check(deadline)?;
-        let checksum = digest(&bytes);
-        let decoded = decode(&bytes, input.format)?;
-        let original = mixed.then_some(bytes);
-        let expected = decoded.image.into_rgba8();
-        let dimensions = expected.dimensions();
-        if recipe.min_width.is_some_and(|width| width > dimensions.0)
-            || recipe.min_height.is_some_and(|height| height > dimensions.1)
-        {
-            return Err(Error::Goal(format!("Oriented size is {} × {} px. Lower the minimum dimensions.", dimensions.0, dimensions.1)));
-        }
-        if output_format == Format::Jpeg && expected.pixels().any(|pixel| pixel[3] != 255) {
-            return Err(Error::Goal("JPEG would discard transparency. Choose PNG or WebP.".into()));
-        }
-        let rgb = (output_format == Format::Jpeg).then(|| {
+    let recipe = goal.recipe;
+    let mixed = recipe.output_format == Format::Mixed;
+    let bytes = snapshot_bytes(&input)?;
+    control.check(deadline)?;
+    let checksum = digest(&bytes);
+    let decoded = if input.format == Format::Heic {
+        let tools = video::tools().ok_or_else(|| {
+            Error::Unsupported("HEIC photos need the FileCraft video engine".into())
+        })?;
+        let (staged, _) = stage_bytes(workspace, &bytes)?;
+        let mut decoded =
+            tools.decode_still(staged.path(), workspace.path(), &|| control.check(deadline))?;
+        decoded.metadata = crate::inspect::heif_metadata(&bytes);
+        decoded
+    } else {
+        decode(&bytes, input.format)?
+    };
+    let expected = decoded.image.into_rgba8();
+    let dimensions = expected.dimensions();
+    if recipe.min_width.is_some_and(|width| width > dimensions.0)
+        || recipe
+            .min_height
+            .is_some_and(|height| height > dimensions.1)
+    {
+        return Err(Error::Goal(format!(
+            "Oriented size is {} × {} px. Lower the minimum dimensions.",
+            dimensions.0, dimensions.1
+        )));
+    }
+    let opaque = expected.pixels().all(|pixel| pixel[3] == 255);
+    if !mixed && recipe.output_format == Format::Jpeg && !opaque {
+        return Err(Error::Goal(
+            "JPEG would discard transparency. Choose PNG or WebP.".into(),
+        ));
+    }
+    let encodings = raster_encodings(goal, input.format, opaque, qualities);
+    let rgb = encodings
+        .iter()
+        .any(|(format, _)| *format == Format::Jpeg)
+        .then(|| {
             image::ImageBuffer::from_fn(dimensions.0, dimensions.1, |x, y| {
                 let [r, g, b, _] = expected.get_pixel(x, y).0;
                 image::Rgb([r, g, b])
             })
         });
-        let mut candidates = Vec::new();
-        let mut smallest = None::<u64>;
-        for (index, quality) in qualities.iter().copied().enumerate() {
-            control.check(deadline)?;
-            update(Phase::Running, index);
-            let mut output = Vec::new();
-            match output_format {
-                Format::Jpeg => {
-                    let rgb = rgb.as_ref().ok_or_else(|| Error::Invalid("Missing JPEG input pixels".into()))?;
-                    JpegEncoder::new_with_quality(&mut output, quality.unwrap_or(90))
-                        .encode(rgb, dimensions.0, dimensions.1, ExtendedColorType::Rgb8)?;
-                }
-                Format::Png => {
-                    PngEncoder::new_with_quality(&mut output, CompressionType::Best, FilterType::Adaptive)
-                        .write_image(&expected, dimensions.0, dimensions.1, ExtendedColorType::Rgba8)?;
-                }
-                Format::Webp => {
-                    WebPEncoder::new_lossless(&mut output)
-                        .write_image(&expected, dimensions.0, dimensions.1, ExtendedColorType::Rgba8)?;
-                }
-                _ => return Err(Error::Unsupported("Expected a raster output".into())),
-            }
-            control.check(deadline)?;
-            let size = output.len() as u64;
-            if let Some(original) = original.as_deref() && size >= input.bytes {
-                smallest = Some(input.bytes);
-                if recipe.max_file_bytes.is_none_or(|cap| input.bytes <= cap) {
-                    update(Phase::Verifying, index);
-                    let (temp, _) = stage_bytes(workspace, original)?;
-                    candidates.push(Candidate { temp, size: input.bytes, checksum: checksum.clone(), format: input.format, evidence: Evidence::RasterCopy });
-                }
-                continue;
-            }
-            smallest = Some(smallest.map_or(size, |current| current.min(size)));
-            if recipe.max_file_bytes.is_some_and(|cap| size > cap) {
-                continue;
-            }
+    let floor = recipe.min_psnr_db.or(mixed.then_some(MIXED_MIN_PSNR));
+    let fits = |size: u64| recipe.max_file_bytes.is_none_or(|cap| size <= cap);
+    let copy_allowed = mixed && (input.format != Format::Heic || goal.keep_originals);
+    let mut candidates = Vec::new();
+    let mut smallest = None::<u64>;
+    let mut copied = false;
+    let mut add_copy = |candidates: &mut Vec<Candidate>| -> Result<()> {
+        if copied || !copy_allowed || !fits(input.bytes) {
+            return Ok(());
+        }
+        copied = true;
+        let (temp, _) = stage_bytes(workspace, &bytes)?;
+        candidates.push(Candidate {
+            temp,
+            size: input.bytes,
+            checksum: checksum.clone(),
+            format: input.format,
+            evidence: Evidence::RasterCopy,
+        });
+        Ok(())
+    };
+    for (index, (format, quality)) in encodings.iter().copied().enumerate() {
+        control.check(deadline)?;
+        update(Phase::Running, index);
+        let output = encode_raster(
+            format,
+            quality,
+            &expected,
+            rgb.as_ref(),
+            decoded.icc.as_deref(),
+        )?;
+        control.check(deadline)?;
+        let size = output.len() as u64;
+        smallest = Some(smallest.map_or(size, |current| current.min(size)));
+        if copy_allowed && size >= input.bytes {
             update(Phase::Verifying, index);
-            if fs2::available_space(workspace.path())? < size {
-                return Err(Error::Io(std::io::Error::other("Not enough free space to stage this candidate")));
-            }
-            let mut temp = NamedTempFile::new_in(workspace.path())?;
-            temp.write_all(&output)?;
-            temp.as_file().sync_all()?;
-            drop(output);
-            let staged = fs::read(temp.path())?;
-            if staged.len() as u64 != size || kind(&staged).1 != Some(output_format) {
-                return Err(Error::Goal("Candidate failed size or format verification".into()));
-            }
-            let Decoded { image, metadata, orientation_applied } = decode(&staged, output_format)?;
-            if !metadata.is_empty() || orientation_applied {
-                return Err(Error::Goal("Candidate retained unexpected metadata".into()));
-            }
-            let observed = image.into_rgba8();
-            if observed.dimensions() != dimensions {
-                return Err(Error::Goal("Output dimensions changed unexpectedly".into()));
-            }
-            let mse = measure(&expected, &observed, control, deadline)?;
-            if output_format != Format::Jpeg && mse != 0.0 {
-                return Err(Error::Goal("Lossless output changed decoded pixels".into()));
-            }
-            let checksum = digest(&staged);
-            let candidate = Candidate { temp, size, checksum, format: output_format, evidence: Evidence::Raster { quality, mse } };
-            let meets_psnr = recipe.min_psnr_db.is_none_or(|min| mse == 0.0 || candidate.psnr().is_some_and(|db| db >= f64::from(min)));
-            if meets_psnr {
-                candidates.push(candidate);
-            }
+            add_copy(&mut candidates)?;
+            continue;
         }
-        if candidates.is_empty() {
-            return Err(Error::Goal(format!(
-                "No candidate met the per-file limits. Smallest attempted: {} bytes. Raise the cap or adjust the format or quality constraints.",
-                smallest.unwrap_or(0),
-            )));
+        if !fits(size) {
+            continue;
         }
-        pareto(&mut candidates);
-        Ok(Plans {
-            input, checksum, dimensions, orientation_applied: decoded.orientation_applied,
-            metadata: decoded.metadata, candidates, duration_ms: elapsed_ms(started),
-        })
-    })().map_err(|error| file_error(&path, error))
+        update(Phase::Verifying, index);
+        ensure_space(workspace, size)?;
+        let mut temp = NamedTempFile::new_in(workspace.path())?;
+        temp.write_all(&output)?;
+        temp.as_file().sync_all()?;
+        drop(output);
+        let staged = fs::read(temp.path())?;
+        if staged.len() as u64 != size || kind(&staged).1 != Some(format) {
+            return Err(Error::Goal(
+                "Candidate failed size or format verification".into(),
+            ));
+        }
+        let Decoded {
+            image,
+            metadata,
+            orientation_applied,
+            icc,
+        } = decode(&staged, format)?;
+        if !metadata.is_empty() || orientation_applied {
+            return Err(Error::Goal("Candidate retained unexpected metadata".into()));
+        }
+        if icc != decoded.icc {
+            return Err(Error::Goal("Candidate changed the ICC profile".into()));
+        }
+        let observed = image.into_rgba8();
+        if observed.dimensions() != dimensions {
+            return Err(Error::Goal("Output dimensions changed unexpectedly".into()));
+        }
+        let mse = measure(&expected, &observed, control, deadline)?;
+        if format != Format::Jpeg && mse != 0.0 {
+            return Err(Error::Goal("Lossless output changed decoded pixels".into()));
+        }
+        let checksum = digest(&staged);
+        let candidate = Candidate {
+            temp,
+            size,
+            checksum,
+            format,
+            evidence: Evidence::Raster {
+                quality,
+                mse,
+                icc: icc.is_some(),
+            },
+        };
+        if floor
+            .is_none_or(|min| mse == 0.0 || candidate.psnr().is_some_and(|db| db >= f64::from(min)))
+        {
+            candidates.push(candidate);
+        }
+    }
+    if mixed && goal.keep_originals {
+        add_copy(&mut candidates)?;
+    }
+    if candidates.is_empty() {
+        return Err(Error::Goal(format!(
+            "No candidate met the per-file limits. Smallest attempted: {} bytes. Raise the cap or adjust the format or quality constraints.",
+            smallest.unwrap_or(input.bytes),
+        )));
+    }
+    pareto(&mut candidates);
+    Ok(Plans {
+        input,
+        checksum,
+        dimensions,
+        orientation_applied: decoded.orientation_applied,
+        metadata: decoded.metadata,
+        candidates,
+        duration_ms: elapsed_ms(started),
+    })
 }
 
 fn snapshot_bytes(input: &Input) -> Result<Vec<u8>> {
@@ -729,45 +973,87 @@ fn prepare_pdf(
     let verified = pdf::optimize(&bytes, &check)?;
     update(Phase::Verifying, 0);
     let compressed = verified.output.is_some();
-    let output = verified.output.as_deref().unwrap_or(&bytes);
-    let size = output.len() as u64;
-    if recipe.max_file_bytes.is_some_and(|cap| size > cap) {
+    let lossless = verified.output.as_deref().unwrap_or(&bytes);
+    let lossless_size = lossless.len() as u64;
+    let fits = |size: u64| recipe.max_file_bytes.is_none_or(|cap| size <= cap);
+    let mut candidates = Vec::new();
+    if fits(lossless_size) {
+        check()?;
+        let (temp, output_checksum) = stage_bytes(workspace, lossless)?;
+        candidates.push(Candidate {
+            temp,
+            size: lossless_size,
+            checksum: output_checksum,
+            format: Format::Pdf,
+            evidence: Evidence::Pdf {
+                pages: verified.pages,
+                compressed,
+                images: None,
+            },
+        });
+    }
+    let mut smallest = lossless_size;
+    if !recipe.lossless_only {
+        let floor = recipe.min_psnr_db.unwrap_or(pdf::MIN_PSNR);
+        for (index, level) in pdf::LEVELS.into_iter().enumerate() {
+            check()?;
+            update(Phase::Running, index + 1);
+            let Some(lossy) =
+                skip_candidate(pdf::recompress(&bytes, level, floor, &check))?.flatten()
+            else {
+                continue;
+            };
+            let size = lossy.output.len() as u64;
+            smallest = smallest.min(size);
+            if size >= lossless_size || !fits(size) {
+                continue;
+            }
+            update(Phase::Verifying, index + 1);
+            let (temp, output_checksum) = stage_bytes(workspace, &lossy.output)?;
+            candidates.push(Candidate {
+                temp,
+                size,
+                checksum: output_checksum,
+                format: Format::Pdf,
+                evidence: Evidence::Pdf {
+                    pages: verified.pages,
+                    compressed: true,
+                    images: Some(lossy.summary),
+                },
+            });
+        }
+    }
+    if candidates.is_empty() {
         return Err(Error::Goal(format!(
-            "The smallest verified lossless PDF is {size} bytes. Raise the per-file limit."
+            "The smallest verified PDF is {smallest} bytes. Raise the per-file limit."
         )));
     }
-    check()?;
-    let (temp, output_checksum) = stage_bytes(workspace, output)?;
+    pareto(&mut candidates);
     Ok(Plans {
         input,
         checksum,
         dimensions: (0, 0),
         metadata: Vec::new(),
         orientation_applied: false,
-        candidates: vec![Candidate {
-            temp,
-            size,
-            checksum: output_checksum,
-            format: Format::Pdf,
-            evidence: Evidence::Pdf {
-                pages: verified.pages,
-                compressed,
-            },
-        }],
+        candidates,
         duration_ms: elapsed_ms(started),
     })
 }
 
+/// Largest MP4 FileCraft writes when no byte limit bounds a conversion.
+const MAX_VIDEO_OUTPUT: u64 = 4 * 1024 * 1024 * 1024;
+
 fn prepare_video(
     input: Input,
-    recipe: &Recipe,
+    goal: &Goal,
     workspace: &TempDir,
     check: impl Fn() -> Result<()>,
     started: Instant,
     mut update: impl FnMut(Phase, usize),
 ) -> Result<Plans> {
+    let recipe = goal.recipe;
     let tools = video::tools()
-        .ok_or_else(|| Error::Unsupported("FFmpeg and FFprobe are unavailable".into()))?;
+        .ok_or_else(|| Error::Unsupported("The video engine is unavailable".into()))?;
     ensure_space(workspace, input.bytes)?;
     let mut staged = NamedTempFile::new_in(workspace.path())?;
     let mut reader = BufReader::new(open_regular(&input.path)?).take(input.bytes + 1);
@@ -784,10 +1070,10 @@ fn prepare_video(
     }
     staged.as_file().sync_all()?;
     let checksum = format!("{:x}", hasher.finalize());
-    let (size, staged_checksum) = check_file(staged.path(), Format::Mp4, &check)?;
+    let (size, staged_checksum) = check_file(staged.path(), input.format, &check)?;
     if size != input.bytes || staged_checksum != checksum {
         return Err(Error::Invalid(
-            "The staged MP4 does not match the input snapshot".into(),
+            "The staged video does not match the input snapshot".into(),
         ));
     }
     let video = tools.probe(staged.path(), &check)?;
@@ -805,22 +1091,37 @@ fn prepare_video(
     }
     let mut candidates = Vec::new();
     let fits = |size| recipe.max_file_bytes.is_none_or(|cap| size <= cap);
-    let ceiling = input
-        .bytes
-        .saturating_sub(1)
-        .min(recipe.max_file_bytes.unwrap_or(u64::MAX))
-        .min(recipe.max_batch_bytes.unwrap_or(u64::MAX));
-    if !recipe.lossless_only && ceiling >= 1024 {
-        for (index, crf) in video::QUALITY.into_iter().enumerate() {
+    // MOV is converted for compatibility unless the originals must stay intact.
+    let copy_allowed = input.format == Format::Mp4 || goal.keep_originals;
+    let rungs: &[video::Rung] = match (recipe.lossless_only, copy_allowed) {
+        (true, true) => &[],
+        (true, false) => &video::LADDER[..1],
+        (false, _) => &video::LADDER,
+    };
+    let ceiling = if copy_allowed {
+        input.bytes.saturating_sub(1)
+    } else {
+        MAX_VIDEO_OUTPUT
+    }
+    .min(recipe.max_file_bytes.unwrap_or(u64::MAX))
+    .min(recipe.max_batch_bytes.unwrap_or(u64::MAX));
+    if ceiling >= 1024 {
+        for (index, rung) in rungs.iter().copied().enumerate() {
             check()?;
             update(Phase::Running, index + 1);
-            ensure_space(workspace, ceiling)?;
+            ensure_space(workspace, ceiling.min(input.bytes.saturating_mul(2)))?;
             let temp = NamedTempFile::new_in(workspace.path())?;
-            if skip_candidate(tools.encode(staged.path(), temp.path(), crf, ceiling, &check))?
-                .is_none()
-            {
+            let Some(size_out) = skip_candidate(tools.encode(
+                staged.path(),
+                temp.path(),
+                &video,
+                rung,
+                ceiling,
+                &check,
+            ))?
+            else {
                 continue;
-            }
+            };
             temp.as_file().sync_all()?;
             update(Phase::Verifying, index + 1);
             let Some((size, output_checksum)) =
@@ -834,7 +1135,7 @@ fn prepare_video(
             let Some(probed) = skip_candidate(tools.probe(temp.path(), &check))? else {
                 continue;
             };
-            if skip_candidate(video.verify_encoded(&probed))?.is_none()
+            if skip_candidate(video.verify_encoded(&probed, size_out))?.is_none()
                 || skip_candidate(tools.decode(temp.path(), &probed, &check))?.is_none()
             {
                 continue;
@@ -846,26 +1147,30 @@ fn prepare_video(
                 format: Format::Mp4,
                 evidence: Evidence::Video {
                     duration: probed.seconds,
-                    crf: Some(crf),
+                    crf: Some(rung.crf),
+                    size: size_out,
+                    tone_mapped: video.hdr,
                 },
             });
         }
     }
-    if fits(input.bytes) {
+    if copy_allowed && fits(input.bytes) {
         candidates.push(Candidate {
             temp: staged,
             size: input.bytes,
             checksum: checksum.clone(),
-            format: Format::Mp4,
+            format: input.format,
             evidence: Evidence::Video {
                 duration: video.seconds,
                 crf: None,
+                size: dimensions,
+                tone_mapped: false,
             },
         });
     }
     if candidates.is_empty() {
         return Err(Error::Goal(
-            "No verified MP4 fits the per-file limit. Increase the limit or use a shorter clip."
+            "No verified video fits the per-file limit. Increase the limit or use a shorter clip."
                 .into(),
         ));
     }
@@ -1000,4 +1305,25 @@ fn publish(
     Err(Error::Io(std::io::Error::other(
         "No unused output name was found. Choose a different folder.",
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reported_paths_drop_the_verbatim_prefix() {
+        assert_eq!(
+            display_path(PathBuf::from(r"\\?\C:\Out\a.jpg")),
+            PathBuf::from(r"C:\Out\a.jpg")
+        );
+        assert_eq!(
+            display_path(PathBuf::from(r"\\?\UNC\server\share\a.jpg")),
+            PathBuf::from(r"\\server\share\a.jpg")
+        );
+        assert_eq!(
+            display_path(PathBuf::from("/tmp/a.jpg")),
+            PathBuf::from("/tmp/a.jpg")
+        );
+    }
 }

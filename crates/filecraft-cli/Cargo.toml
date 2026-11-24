@@ -10,6 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-filecraft-core.workspace = true
+filecraft-core = { workspace = true, features = ["installer"] }
 serde_json.workspace = true
 ctrlc = "3"

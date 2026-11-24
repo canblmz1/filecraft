@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { Fragment, useCallback, useEffect, useState, type FormEvent } from 'react'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import {
   ArrowDownToLine, ArrowRight, ArrowUpRight, Boxes, Check, ChevronDown, CircleAlert,
-  Clock3, FileImage, FileSearch, FileText, Folder, HardDrive, History, Image, Layers2, LockKeyhole,
+  Clock3, Download, FileImage, FileSearch, FileText, Folder, HardDrive, History, Image, Layers2, LockKeyhole,
   Plus, ShieldCheck, SlidersHorizontal, Sparkles, Upload, Video, Workflow, X,
 } from 'lucide-react'
-import { active, api, baseRecipe, basename, desktop, errorText, label, mixedRecipe, size, type Capability, type Input, type Job, type OutputMode, type Recipe } from './api'
+import { accepts, active, api, baseRecipe, basename, desktop, errorText, label, mixedRecipe, needsVideoEngine, size, type Capability, type EngineInstall, type EngineStatus, type Input, type Job, type OutputMode, type Recipe } from './api'
 
 type View = 'Workbench' | 'Inspector' | 'Recipes' | 'History' | 'Engines'
 type Attempt = { paths: string[]; folder: string; recipe: Recipe }
@@ -32,8 +32,8 @@ function Brand({ onClick }: { onClick: () => void }) {
   </button>
 }
 
-function DropZone({ count, loading, dragging, pick, videoAvailable }: {
-  count: number; loading: boolean; dragging: boolean; pick: () => void; videoAvailable: boolean
+function DropZone({ count, loading, dragging, pick, formats }: {
+  count: number; loading: boolean; dragging: boolean; pick: () => void; formats: string[]
 }) {
   return <div className={'dropzone' + (dragging ? ' is-dragging' : '') + (count ? ' compact' : '')}>
     <div className="drop-art" aria-hidden="true">
@@ -46,7 +46,7 @@ function DropZone({ count, loading, dragging, pick, videoAvailable }: {
     <h3>{count ? 'Add more files' : 'Drop your files here'}</h3>
     <p>{loading ? 'Inspecting files locally…' : 'Drag and drop files, or browse your device.'}</p>
     <button className="button primary browse" onClick={pick}><Plus size={17} /> Browse files</button>
-    <span className="drop-note">JPEG <i /> PNG <i /> WebP <i /> PDF {videoAvailable && <><i /> MP4</>}</span>
+    <span className="drop-note">{formats.map((format, index) => <Fragment key={format}>{index > 0 && <i />}{format}</Fragment>)}</span>
   </div>
 }
 
@@ -58,7 +58,7 @@ function InputList({ rows, remove }: { rows: Input[]; remove: (path: string) => 
   }
   return <ul className="file-list">{rows.map(({ path, file, error }) => <li key={path}>
     <div className="file-row">
-      <span className="square orange">{file?.format === 'pdf' ? <FileText size={19} /> : file?.format === 'mp4' ? <Video size={19} /> : <FileImage size={19} />}</span>
+      <span className="square orange">{file?.format === 'pdf' ? <FileText size={19} /> : file?.format === 'mp4' || file?.format === 'mov' ? <Video size={19} /> : <FileImage size={19} />}</span>
       <div className="file-main"><strong title={path}>{file?.name ?? basename(path)}</strong>
         <small>{file ? [file.mime ?? 'Unknown signature', size(file.bytes), file.width ? file.width + ' × ' + file.height + ' px' : null].filter(Boolean).join(' · ') : error}</small>
       </div>
@@ -102,7 +102,7 @@ function GoalPanel({ recipe, change, output, choose, submit, available, enabled,
       {available.map(format => <button key={format} type="button" className={recipe.output_format === format ? 'selected' : ''} aria-pressed={recipe.output_format === format}
         onClick={() => change({ ...recipe, output_format: format, max_batch_bytes: format === 'mixed' ? recipe.max_batch_bytes ?? mixedRecipe.max_batch_bytes : recipe.max_batch_bytes, lossless_only: format === 'webp' || format === 'png', jpeg_quality: format === 'jpeg' ? 90 : null, min_psnr_db: null })}>{label(format)}</button>)}
     </fieldset>
-    {recipe.output_format === 'mixed' && <p className="goal-hint">{videoAvailable ? 'Images, PDF and MP4 share one size limit.' : 'Images and PDF share one size limit. MP4 requires FFmpeg and FFprobe on PATH.'}</p>}
+    {recipe.output_format === 'mixed' && <p className="goal-hint">{videoAvailable ? 'Photos, PDFs and videos share one size limit.' : 'Photos and PDFs share one size limit. Install the video engine for MP4, MOV and HEIC.'}</p>}
     <div className="fields">
       {sizeField('max_batch_bytes', 'Batch size limit')}
       {sizeField('max_file_bytes', 'Per-file size limit')}
@@ -114,9 +114,9 @@ function GoalPanel({ recipe, change, output, choose, submit, available, enabled,
         {numberField('min_height', 'Minimum height', 'px', 12000)}
         {numberField('max_seconds', 'Time budget', 'sec', 86400)}
         {recipe.output_format === 'jpeg' && numberField('jpeg_quality', 'Preferred quality', '%', 100, 35)}
-        {recipe.output_format === 'jpeg' && numberField('min_psnr_db', 'Minimum PSNR', 'dB', 100)}
+        {(recipe.output_format === 'jpeg' || recipe.output_format === 'mixed') && numberField('min_psnr_db', 'Minimum PSNR', 'dB', 100)}
       </div>
-      {recipe.output_format === 'mixed' && <label className="lossless-toggle"><input type="checkbox" checked={recipe.lossless_only} onChange={event => change({ ...recipe, lossless_only: event.target.checked })} /> Keep MP4 bytes unchanged</label>}
+      {recipe.output_format === 'mixed' && <label className="lossless-toggle"><input type="checkbox" checked={recipe.lossless_only} onChange={event => change({ ...recipe, lossless_only: event.target.checked })} /> Lossless only: keep originals instead of re-encoding</label>}
     </details>
     <div className="folder-field"><span>Save to</span><button type="button" className="button folder-button" onClick={choose} title={output || undefined}><Folder size={17} /><span>{output ? basename(output) : 'Choose output folder'}</span><ChevronDown size={15} /></button></div>
     <button className="button primary run" type="submit" disabled={!enabled}><Sparkles size={17} /> Run &amp; verify <ArrowRight size={17} /></button>
@@ -165,6 +165,10 @@ function JobCard({ job, cancel, retry, save, busy }: {
         file.pdf_pages ? file.pdf_pages + ' pages' : null,
         file.video_duration_seconds ? file.video_duration_seconds.toFixed(2) + ' s' : null,
         file.video_crf ? 'CRF ' + file.video_crf : null,
+        file.video_tone_mapped ? 'HDR tone-mapped to SDR' : null,
+        file.pdf_images ? `${file.pdf_images.images_reencoded} page ${file.pdf_images.images_reencoded === 1 ? 'image' : 'images'} at up to ${file.pdf_images.max_dpi} dpi, JPEG ${file.pdf_images.jpeg_quality}, PSNR ≥ ${file.pdf_images.min_psnr_db.toFixed(1)} dB` : null,
+        file.jpeg_quality ? 'JPEG quality ' + file.jpeg_quality : null,
+        file.icc_profile_preserved ? 'ICC profile kept' : null,
         file.pixels_identical && !file.unchanged ? 'Identical decoded pixels' : null,
         file.psnr_db != null ? 'PSNR ' + file.psnr_db.toFixed(2) + ' dB' : null,
       ].filter(Boolean).join(' · ')}</p>
@@ -175,6 +179,32 @@ function JobCard({ job, cancel, retry, save, busy }: {
       <p>Output SHA-256 <code>{file.output_sha256}</code></p>
       <p>Saved at <code>{file.output_path}</code></p>
     </details>)}</>}
+  </article>
+}
+
+const stages = { downloading: 'Downloading', verifying: 'Checking SHA-256', extracting: 'Extracting', testing: 'Testing' }
+const sources = { managed: 'installed by FileCraft', path: 'found on PATH', environment: 'set by FILECRAFT_FFMPEG_DIR' }
+
+function VideoEngine({ status, install, start, cancel }: {
+  status?: EngineStatus; install?: EngineInstall; start: () => void; cancel: () => void
+}) {
+  const progress = install?.running ? install.progress : null
+  return <article className="job-card engine-card">
+    <div className="section-head"><div className="panel-heading"><span className={'square ' + (status?.available ? 'sage' : 'orange')}><Video size={19} /></span><div>
+      <h3>Video engine</h3>
+      <p>{status?.available ? `${status.version?.replace(/ Copyright.*$/, '') ?? 'FFmpeg'} · ${status.source ? sources[status.source] : ''}` : 'Needed for MP4, MOV and HEIC files'}</p>
+    </div></div>
+      {install?.running ? <button className="button secondary" onClick={cancel}>Cancel</button>
+        : status?.installable && status.source !== 'managed' && <button className="button primary" onClick={start}><Download size={15} /> Install{status.install_bytes ? ' · ' + size(status.install_bytes) : ''}</button>}
+    </div>
+    {install?.running && <div className="progress">
+      <progress aria-label="Video engine installation" max={progress?.total_bytes || 1} value={progress?.received_bytes ?? 0} />
+      <p>{progress ? `${stages[progress.stage]} · ${size(progress.received_bytes)} of ${size(progress.total_bytes)}` : 'Connecting…'}</p>
+    </div>}
+    {install?.error && !install.running && <p className="warning">{install.error}</p>}
+    {status?.available && <p>{status.hdr_tone_mapping ? 'HDR video is tone-mapped to SDR' : 'HDR video needs FFmpeg with zscale'} · {status.heic ? 'HEIC photos supported' : 'HEIC needs FFmpeg 7.1 or later'}</p>}
+    {status && !status.available && !status.installable && <p>Install FFmpeg with your package manager, for example <code>brew install ffmpeg</code> or <code>sudo apt install ffmpeg</code>, then restart FileCraft.</p>}
+    {status?.installable && status.source !== 'managed' && <p>Downloads the pinned FFmpeg 9.1 build (GPLv3, gyan.dev) only when you click Install, checks its size and SHA-256, and keeps it in FileCraft's data folder.</p>}
   </article>
 }
 
@@ -197,6 +227,8 @@ export default function App() {
   const [lastAttempt, setLastAttempt] = useState<Attempt>()
   const [history, setHistory] = useState<Job[]>([])
   const [engines, setEngines] = useState<Capability[]>([])
+  const [videoEngine, setVideoEngine] = useState<EngineStatus>()
+  const [install, setInstall] = useState<EngineInstall>()
   const [feedback, setFeedback] = useState<{ text: string; error: boolean }>()
   const [submitting, setSubmitting] = useState(false)
   const [cancelling, setCancelling] = useState(false)
@@ -207,13 +239,17 @@ export default function App() {
   const offered = desktop
     ? modes.filter(mode => mode === 'mixed' ? raster && pdf : raster?.output_formats.includes(mode))
     : modes
-  const unsupported = rows.find(({ file }) => !file?.format || (
-    goal.output_format === 'mixed'
-      ? !file.raster_format && !(file.format === 'pdf' && pdf) && !(file.format === 'mp4' && videoAvailable)
-      : !file.raster_format
-  ))
+  const unsupported = rows.find(({ file }) => desktop ? !accepts(engines, file?.format, goal.output_format) : !file?.format)
+  const missingVideo = desktop && rows.some(({ file }) => needsVideoEngine(file?.format) && !accepts(engines, file?.format, 'mixed'))
+  const formats = desktop
+    ? [...new Set(engines.filter(engine => engine.available).flatMap(engine => engine.input_formats))].map(label)
+    : ['JPEG', 'PNG', 'WebP', 'PDF']
 
   const fail = useCallback((error: unknown) => setFeedback({ text: errorText(error), error: true }), [])
+  const reloadEngines = useCallback(() => Promise.all([
+    api.capabilities().then(setEngines),
+    api.videoEngine().then(setVideoEngine),
+  ]).then(() => undefined, fail), [fail])
   const add = useCallback(async (paths: string[]) => {
     setLoading(count => count + 1)
     try {
@@ -234,8 +270,32 @@ export default function App() {
     })
     listener.catch(fail)
     api.capabilities().then(available => { if (!disposed) setEngines(available) }, fail)
+    api.videoEngine().then(status => { if (!disposed) setVideoEngine(status) }, fail)
+    api.installState().then(state => { if (!disposed && state.running) setInstall(state) }, fail)
     return () => { disposed = true; void listener.then(unlisten => unlisten(), () => undefined) }
   }, [add, fail])
+
+  useEffect(() => {
+    if (!desktop || !install?.running) return
+    let disposed = false
+    let timeout: ReturnType<typeof setTimeout>
+    async function poll() {
+      try {
+        const state = await api.installState()
+        if (disposed) return
+        setInstall(state)
+        if (!state.running) {
+          await reloadEngines()
+          if (state.error) setFeedback({ text: state.error, error: true })
+          else setFeedback({ text: 'Video engine installed and verified.', error: false })
+          return
+        }
+      } catch (error) { if (!disposed) fail(error) }
+      if (!disposed) timeout = setTimeout(poll, 400)
+    }
+    timeout = setTimeout(poll, 400)
+    return () => { disposed = true; clearTimeout(timeout) }
+  }, [install?.running, reloadEngines, fail])
 
   useEffect(() => {
     if (!desktop || (view !== 'History' && !runningId)) return
@@ -270,6 +330,12 @@ export default function App() {
   const saveReport = (id: string) => void perform(async () => { if (await api.exportReport(id)) notice('Verification report saved.') })
   const remove = (path: string) => setRows(existing => existing.filter(row => row.path !== path))
   const selectPreset = (recipe: Recipe) => { setGoal(recipe); setView('Workbench'); notice('Recipe applied to the current workbench.') }
+  const installEngine = () => void perform(async () => {
+    await api.installEngine()
+    setInstall({ running: true, progress: null, error: null, status: null })
+  })
+  const cancelInstall = () => void perform(() => api.cancelInstall())
+  const engineCard = <VideoEngine status={videoEngine} install={install} start={installEngine} cancel={cancelInstall} />
 
   const canRun = rows.length > 0 && !unsupported && !loading && offered.includes(goal.output_format) && !submitting && !runningId
   async function start(event?: FormEvent, retry?: Attempt) {
@@ -316,13 +382,14 @@ export default function App() {
           <div className="main-column">
             <section aria-label="Input files">
               <div className="section-head"><h2>Input files</h2><span className="file-count">{rows.length} {rows.length === 1 ? 'file' : 'files'}{rows.length > 0 ? ' · ' + size(rows.reduce((total, row) => total + (row.file?.bytes ?? 0), 0)) : ''}</span></div>
-              <DropZone count={rows.length} loading={loading > 0} dragging={dragging} pick={pick} videoAvailable={videoAvailable} />
+              <DropZone count={rows.length} loading={loading > 0} dragging={dragging} pick={pick} formats={formats} />
               <InputList rows={rows} remove={remove} />
-              {unsupported && <p className="warning">{unsupported.file?.format === 'mp4' && !videoAvailable
-                ? 'MP4 requires FFmpeg with libx264 and AAC plus FFprobe on PATH. Restart FileCraft after installing them.'
-                : goal.output_format !== 'mixed' && (unsupported.file?.format === 'pdf' || unsupported.file?.format === 'mp4')
-                  ? 'Choose Mixed batch to process PDF or MP4 with your images.'
+              {unsupported && <p className="warning">{missingVideo
+                ? 'MP4, MOV and HEIC files need the video engine. Install it below, then run again.'
+                : goal.output_format !== 'mixed' && accepts(engines, unsupported.file?.format, 'mixed')
+                  ? 'Choose Mixed batch to process PDF or video with your images.'
                   : `Remove ${unsupported.file?.name ?? basename(unsupported.path)} to run this goal.`}</p>}
+              {missingVideo && engineCard}
             </section>
             {job && <JobCard job={job} cancel={() => cancel(job.id)} busy={cancelling} retry={lastAttempt && !submitting && (job.state === 'failed' || job.state === 'cancelled') ? () => void start(undefined, lastAttempt) : undefined} save={() => saveReport(job.id)} />}
             <section><div className="section-head shortcuts-title"><h2>Quick recipes</h2><button className="text-button" onClick={() => setView('Recipes')}>All recipes <ArrowRight size={14} /></button></div><Presets select={selectPreset} /></section>
@@ -331,14 +398,14 @@ export default function App() {
             <div className="privacy-note"><ShieldCheck size={16} /><span>FileCraft processes and verifies files on this device.</span></div>
           </div>
         </div>}
-        {view === 'Inspector' && <section className="main-column"><DropZone count={rows.length} loading={loading > 0} dragging={dragging} pick={pick} videoAvailable={videoAvailable} /><InputList rows={rows} remove={remove} /></section>}
+        {view === 'Inspector' && <section className="main-column"><DropZone count={rows.length} loading={loading > 0} dragging={dragging} pick={pick} formats={formats} /><InputList rows={rows} remove={remove} /></section>}
         {view === 'Recipes' && <section className="main-column"><Presets select={selectPreset} /><div className="job-card section-head"><div><h3>Current workbench recipe</h3><p>Settings only. Input files and output paths stay out of the recipe.</p></div><button className="button secondary" onClick={saveGoal}><ArrowDownToLine size={16} /> Export recipe</button></div></section>}
         {view === 'History' && <section className="main-column">{history.length ? history.map(item => <JobCard key={item.id} job={item} cancel={() => cancel(item.id)} save={() => saveReport(item.id)} busy={cancelling && item.id === runningId} />) : <div className="job-card"><h3>No jobs yet</h3><p>Processing jobs appear here once submitted.</p></div>}</section>}
-        {view === 'Engines' && <section className="main-column">{engines.map(engine => <article className="job-card" key={engine.id}>
+        {view === 'Engines' && <section className="main-column">{desktop && engineCard}{engines.map(engine => <article className="job-card" key={engine.id}>
           <div className="panel-heading"><span className="square sage"><Boxes size={19} /></span><div><h3>{engine.id}</h3><p>Adapter {engine.version} · {engine.available ? 'Available' : 'Unavailable'}</p></div></div>
           <p>{engine.input_formats.map(label).join(', ')} input · {engine.output_formats.map(label).join(', ')} output</p><p>{engine.constraints.join(' · ')}</p>
           <p>Input limit {size(engine.max_input_bytes)}{engine.max_pixels > 0 && ' · ' + engine.max_pixels.toLocaleString('en') + ' pixels'}</p>
-          {engine.external_dependencies.length > 0 && <p>Requires {engine.external_dependencies.join(' and ')} on PATH.</p>}
+          {engine.external_dependencies.length > 0 && <p>Requires {engine.external_dependencies.join(' and ')}, installed from the video engine card or found on PATH.</p>}
           <p>{engine.license}</p><p>Checks {engine.validation.join(', ')}</p>
         </article>)}</section>}
       </main>

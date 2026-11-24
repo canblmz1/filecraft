@@ -1,12 +1,18 @@
+mod engine;
 mod inspect;
 mod pdf;
 mod process;
 mod recipe;
 mod video;
 
+pub use engine::set_data_dir;
+#[cfg(feature = "installer")]
+pub use engine::{InstallProgress, InstallStage, install_video_engine};
 pub use inspect::{Inspection, inspect};
+pub use pdf::ImageSummary;
 pub use process::{BatchReport, Control, FileReport, Phase, Progress, Status, run};
 pub use recipe::{Capability, Format, Recipe, capabilities};
+pub use video::{EngineStatus, refresh_video_engine, video_engine};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

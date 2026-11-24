@@ -12,6 +12,8 @@ pub enum Format {
     Webp,
     Pdf,
     Mp4,
+    Mov,
+    Heic,
     Mixed,
 }
 
@@ -23,6 +25,8 @@ impl Format {
             Self::Webp => "webp",
             Self::Pdf => "pdf",
             Self::Mp4 => "mp4",
+            Self::Mov => "mov",
+            Self::Heic => "heic",
             Self::Mixed => unreachable!("a batch mode has no file extension"),
         }
     }
@@ -34,12 +38,19 @@ impl Format {
             Self::Webp => "image/webp",
             Self::Pdf => "application/pdf",
             Self::Mp4 => "video/mp4",
+            Self::Mov => "video/quicktime",
+            Self::Heic => "image/heic",
             Self::Mixed => unreachable!("a batch mode has no MIME type"),
         }
     }
 
+    /// Formats decoded by the native raster adapter.
     pub(crate) fn is_raster(self) -> bool {
         matches!(self, Self::Jpeg | Self::Png | Self::Webp)
+    }
+
+    pub(crate) fn is_video(self) -> bool {
+        matches!(self, Self::Mp4 | Self::Mov)
     }
 }
 
@@ -83,9 +94,12 @@ impl Recipe {
                 "Set a total size limit for a mixed batch".into(),
             ));
         }
-        if matches!(self.output_format, Format::Pdf | Format::Mp4) {
+        if matches!(
+            self.output_format,
+            Format::Pdf | Format::Mp4 | Format::Mov | Format::Heic
+        ) {
             return Err(Error::Unsupported(
-                "Choose Mixed batch for PDF or MP4 processing".into(),
+                "Choose Mixed batch for PDF or video processing".into(),
             ));
         }
         if [self.max_file_bytes, self.max_batch_bytes, self.max_seconds].contains(&Some(0))
@@ -121,10 +135,14 @@ impl Recipe {
                     "JPEG quality must be 35–100 and minimum PSNR must be 1–100 dB".into(),
                 ));
             }
-        } else if self.jpeg_quality.is_some() || self.min_psnr_db.is_some() {
+        } else if self.jpeg_quality.is_some()
+            || (self.min_psnr_db.is_some() && self.output_format != Format::Mixed)
+        {
             return Err(Error::Goal(
-                "JPEG quality controls require JPEG output".into(),
+                "JPEG quality controls require JPEG output or a mixed batch".into(),
             ));
+        } else if self.min_psnr_db.is_some_and(|db| !(1..=100).contains(&db)) {
+            return Err(Error::Invalid("Minimum PSNR must be 1–100 dB".into()));
         }
         Ok(())
     }
@@ -148,12 +166,12 @@ pub struct Capability {
     pub available: bool,
 }
 
-pub(crate) const MAX_PIXELS: u64 = 24_000_000;
+pub(crate) const MAX_PIXELS: u64 = 50_000_000;
 pub(crate) const MAX_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
 const FORMATS: &[Format] = &[Format::Jpeg, Format::Png, Format::Webp];
 
-pub fn capabilities() -> [Capability; 3] {
-    [
+pub fn capabilities() -> Vec<Capability> {
+    vec![
         Capability {
             interface_version: 1,
             id: "native-raster",
@@ -166,11 +184,12 @@ pub fn capabilities() -> [Capability; 3] {
                 "convert",
                 "batch_byte_budget",
                 "reencode_without_ancillary_metadata",
+                "mixed_batch_jpeg_with_psnr_floor",
             ],
             constraints: &[
-                "static 8-bit raster",
+                "static 8-bit raster up to 50 megapixels",
                 "one decode/encode per worker",
-                "no embedded ICC conversion",
+                "RGB ICC profiles are carried over unchanged, not converted",
             ],
             validation: &[
                 "decode",
@@ -179,7 +198,8 @@ pub fn capabilities() -> [Capability; 3] {
                 "byte limits",
                 "SHA-256",
                 "pixel equality or RGB PSNR",
-                "EXIF/ICC/XMP/IPTC decoder probes",
+                "ICC profile bytes",
+                "EXIF/XMP/IPTC decoder probes",
             ],
             external_dependencies: &[],
             max_pixels: MAX_PIXELS,
@@ -194,23 +214,31 @@ pub fn capabilities() -> [Capability; 3] {
             license: "MIT (adapter and lopdf)",
             input_formats: &[Format::Pdf],
             output_formats: &[Format::Pdf],
-            operations: &["mixed_batch", "lossless_pdf_stream_compression"],
+            operations: &[
+                "mixed_batch",
+                "lossless_pdf_stream_compression",
+                "pdf_image_downsampling",
+            ],
             constraints: &[
                 "Strict parsing",
                 "signed, encrypted, incremental and linearized PDFs are kept byte-for-byte when readable",
+                "8-bit gray and RGB page images are downsampled to 200, 150 or 120 dpi and stored as JPEG",
             ],
             validation: &[
                 "SHA-256",
                 "page order",
                 "parsed objects and trailer",
                 "decompressed bytes for changed streams",
+                "unchanged objects decode identically",
+                "re-encoded images decode to the planned size with RGB PSNR above the floor",
             ],
             external_dependencies: &[],
-            max_pixels: 0,
+            max_pixels: MAX_PIXELS,
             max_input_bytes: crate::pdf::MAX_BYTES,
             cancellation: "cooperative between PDF operations",
             available: true,
         },
         crate::video::capability(),
+        crate::video::heif_capability(),
     ]
 }

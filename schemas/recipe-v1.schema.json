@@ -18,11 +18,15 @@
   },
   "if": { "properties": { "output_format": { "const": "jpeg" } } },
   "then": { "properties": { "lossless_only": { "const": false } } },
-  "else": { "properties": { "jpeg_quality": { "type": "null" }, "min_psnr_db": { "type": "null" } } },
+  "else": { "properties": { "jpeg_quality": { "type": "null" } } },
   "allOf": [
     {
       "if": { "properties": { "output_format": { "const": "mixed" } } },
       "then": { "required": ["max_batch_bytes"], "properties": { "max_batch_bytes": { "type": "integer" } } }
+    },
+    {
+      "if": { "properties": { "output_format": { "enum": ["png", "webp"] } } },
+      "then": { "properties": { "min_psnr_db": { "type": "null" } } }
     }
   ]
 }
